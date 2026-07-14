@@ -1,4 +1,5 @@
 mod batch;
+mod content;
 mod dds;
 mod gamepath;
 mod pak;
@@ -80,6 +81,14 @@ enum Commands {
         edited_dir: PathBuf,
         out_html: PathBuf,
     },
+    /// Export a `.xmsh` mesh to a standard `.obj`, editable in Blender or any 3D tool.
+    /// Requires `mimicry-helper.exe` (see `../mimicry-helper`).
+    MeshToObj { input: PathBuf, output: PathBuf },
+    /// Import a standard `.obj` back into a `.xmsh` mesh. Requires `mimicry-helper.exe`.
+    ObjToMesh { input: PathBuf, output: PathBuf },
+    /// Dump every shader element and property of a `.xmat` material to a plain-text report.
+    /// Requires `mimicry-helper.exe`.
+    MaterialDump { input: PathBuf, output: PathBuf },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -232,6 +241,18 @@ fn main() -> anyhow::Result<()> {
         } => {
             let count = batch::build_review_html(&manifest, &edited_dir, &out_html)?;
             println!("Wrote {} ({count} changed texture(s))", out_html.display());
+        }
+        Commands::MeshToObj { input, output } => {
+            content::mesh_to_obj(&input, &output)?;
+            println!("Wrote {}", output.display());
+        }
+        Commands::ObjToMesh { input, output } => {
+            content::obj_to_mesh(&input, &output)?;
+            println!("Wrote {}", output.display());
+        }
+        Commands::MaterialDump { input, output } => {
+            content::material_dump(&input, &output)?;
+            println!("Wrote {}", output.display());
         }
         Commands::Discover { exe_or_shortcut } => {
             let exe = gamepath::resolve_shortcut(&exe_or_shortcut)?;
