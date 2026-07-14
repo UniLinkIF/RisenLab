@@ -1,3 +1,4 @@
+mod gamepath;
 mod pak;
 mod ximg;
 
@@ -35,6 +36,9 @@ enum Commands {
         #[arg(long)]
         height: i32,
     },
+    /// Point at risen.exe (or a .lnk shortcut to it) and find every archive in the install —
+    /// this is the whole "pick the exe, we take it from there" flow.
+    Discover { exe_or_shortcut: PathBuf },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -99,6 +103,19 @@ fn main() -> anyhow::Result<()> {
                 width,
                 height
             );
+        }
+        Commands::Discover { exe_or_shortcut } => {
+            let exe = gamepath::resolve_shortcut(&exe_or_shortcut)?;
+            println!("Resolved target: {}", exe.display());
+            let root = gamepath::discover_game_root(&exe).ok_or_else(|| {
+                anyhow::anyhow!("could not find a data/ folder with archives above {}", exe.display())
+            })?;
+            println!("Game root: {}", root.display());
+            let archives = gamepath::discover_archives(&root)?;
+            println!("{} archives found:", archives.len());
+            for a in &archives {
+                println!("  [{}] {}", a.group, a.path.display());
+            }
         }
     }
     Ok(())

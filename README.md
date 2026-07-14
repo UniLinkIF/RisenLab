@@ -28,9 +28,14 @@ built yet.
 - **`tools/dxt3_encode.py`** — a small from-scratch DXT3/BC2 encoder (S3TC), used to produce
   a real compressed DDS for the round-trip test above without depending on an external
   image-compression library. Stands in for the eventual AI upscale step.
+- **`gamepath.rs`** — "point at `Risen.exe` (or a `.lnk` shortcut to it), we take it from
+  there": resolves a Windows shortcut to its target (own minimal `.lnk` parser, no PowerShell
+  needed), walks up from the exe to find the game root, then recursively finds every archive
+  under `data/`. This is meant to be the *only* manual step in the eventual app — everything
+  downstream (which `.pak`s exist, what's in them) is discovered automatically.
 
 Run `cargo build --release` then `./target/release/risenlab --help` for the CLI
-(`list`, `unpack`, `pack`, `ximg-to-dds`, `ximg-info`, `ximg-patch`).
+(`list`, `unpack`, `pack`, `ximg-to-dds`, `ximg-info`, `ximg-patch`, `discover`).
 
 ## Why these formats and not others
 

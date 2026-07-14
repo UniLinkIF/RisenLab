@@ -13,6 +13,12 @@
       it back in → re-parsed and re-decoded successfully as a valid 256x256 image. Proves the mechanical
       pipeline (unpack → transform → repack → verify) works; the transform step itself is still a placeholder
       (Lanczos, not a real AI model) — see next item.
+- [x] **Game auto-discovery** (`src/gamepath.rs`, `risenlab discover <exe-or-.lnk>`): point at `Risen.exe`
+      (or a `.lnk` shortcut to it — minimal MS-SHLLINK `LinkInfo`/`LocalBasePath` parser, no PowerShell
+      dependency) and the tool walks up to the game root, then recursively finds every archive under
+      `data/` (`.pak` and `.pXX`/`.0X` patch volumes), grouped by `compiled`/`common`. Verified against a
+      synthetic install layout built from real `library.pak`/`materials.pak`. The `.lnk` parser hasn't been
+      exercised against a real Windows-generated shortcut yet — untested edge case, see below.
 
 ## Next
 
@@ -23,6 +29,9 @@
 - [ ] Test the zlib decompression path against a real compressed `.pak` entry (likely in `images.pak`)
 - [ ] Empirically confirm `.pXX` override/priority rule against the real game (needs Windows + Risen install)
 - [ ] End-to-end proof: unpack one real texture from `images.pak` → upscale → repack into a `.p01` → load in-game
+- [ ] Verify `resolve_shortcut` against a real Windows-created `.lnk` to Risen.exe (Desktop/Start Menu
+      shortcuts can carry LinkTargetIDList-only shortcuts our parser doesn't handle yet — falls back to
+      an error rather than silently guessing)
 
 ## Later
 
