@@ -1,9 +1,4 @@
-mod batch;
-mod content;
-mod dds;
-mod gamepath;
-mod pak;
-mod ximg;
+use risenlab::{batch, content, dds, gamepath, pak, ximg};
 
 use std::path::PathBuf;
 

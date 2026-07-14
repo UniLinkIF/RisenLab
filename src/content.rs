@@ -7,13 +7,28 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
-/// Locates `mimicry-helper.exe`: `RISENLAB_MIMICRY_HELPER` env var if set, otherwise the
-/// conventional sibling-directory location next to this repo.
+/// Locates `mimicry-helper.exe`. Checked in order: `RISENLAB_MIMICRY_HELPER` env var, next to
+/// this binary's own directory, next to this repo (`../mimicry-helper`, dev layout), then the
+/// known fixed location on this machine — needed because a copy of `risenlab_gui.exe` (e.g. on
+/// the Desktop) has neither a meaningful "current directory" nor "next to the repo" relationship
+/// to the helper.
 fn helper_exe_path() -> PathBuf {
     if let Ok(p) = std::env::var("RISENLAB_MIMICRY_HELPER") {
         return PathBuf::from(p);
     }
-    PathBuf::from("../mimicry-helper/mimicry-helper.exe")
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let candidate = dir.join("mimicry-helper.exe");
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
+    let relative = PathBuf::from("../mimicry-helper/mimicry-helper.exe");
+    if relative.exists() {
+        return relative;
+    }
+    PathBuf::from(r"C:\Users\rusak\OneDrive\Desktop\Claude\mimicry-helper\mimicry-helper.exe")
 }
 
 fn run_helper(args: &[&str]) -> Result<()> {
