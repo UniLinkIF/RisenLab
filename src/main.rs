@@ -88,9 +88,13 @@ fn main() -> anyhow::Result<()> {
         Commands::List { archive } => {
             let mut a = pak::PakArchive::open(&archive)?;
             println!(
-                "product={:#010x} valid_g3v0={} data_offset={} root_offset={} volume_size={}",
+                "product={:#010x} valid_g3v0={} version={} revision={} encryption={} compression={} data_offset={} root_offset={} volume_size={}",
                 a.header.product,
                 a.is_valid_g3v0(),
+                a.header.version,
+                a.header.revision,
+                a.header.encryption,
+                a.header.compression,
                 a.header.data_offset,
                 a.header.root_offset,
                 a.header.volume_size
@@ -124,7 +128,8 @@ fn main() -> anyhow::Result<()> {
         Commands::XimgInfo { input } => {
             let data = std::fs::read(&input)?;
             let info = ximg::parse(&data)?;
-            println!("{info:#?}");
+            let pixel_format = ximg::read_pixel_format(&data).unwrap_or_else(|_| "?".to_string());
+            println!("{info:#?}\npixel_format: {pixel_format}");
         }
         Commands::XimgPatch {
             input,

@@ -25,7 +25,10 @@ use std::io;
 
 const MAGIC: &[u8; 8] = b"GR01IM04";
 
+// Fields are shown to the user via `{info:#?}` (the whole point of `ximg-info`), but rustc's
+// dead-code lint doesn't count Debug-derive formatting as a "read", hence the blanket allow.
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct XimgInfo {
     pub header_const: i32,
     pub property_block_size: i32,

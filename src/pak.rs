@@ -72,7 +72,13 @@ impl FileEntry {
 #[derive(Debug)]
 enum Node {
     File(FileEntry),
-    Dir { name: String, entries: Vec<Node> },
+    // `name` is only used for Debug output today (kept while reading — flatten_node doesn't
+    // need it since each FileEntry already carries its own full path).
+    Dir {
+        #[allow(dead_code)]
+        name: String,
+        entries: Vec<Node>,
+    },
 }
 
 pub struct PakArchive {
