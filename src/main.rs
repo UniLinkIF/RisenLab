@@ -24,6 +24,17 @@ enum Commands {
     XimgToDds { input: PathBuf, output: PathBuf },
     /// Print ._ximg header info (width/height/offsets)
     XimgInfo { input: PathBuf },
+    /// Splice a new DDS (same pixel format, e.g. after AI upscale) into a copy of an
+    /// existing ._ximg, patching Width/Height in place.
+    XimgPatch {
+        input: PathBuf,
+        new_dds: PathBuf,
+        output: PathBuf,
+        #[arg(long)]
+        width: i32,
+        #[arg(long)]
+        height: i32,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -69,6 +80,25 @@ fn main() -> anyhow::Result<()> {
             let data = std::fs::read(&input)?;
             let info = ximg::parse(&data)?;
             println!("{info:#?}");
+        }
+        Commands::XimgPatch {
+            input,
+            new_dds,
+            output,
+            width,
+            height,
+        } => {
+            let original = std::fs::read(&input)?;
+            let dds = std::fs::read(&new_dds)?;
+            let patched = ximg::replace_dds(&original, width, height, &dds)?;
+            std::fs::write(&output, &patched)?;
+            println!(
+                "Wrote {} ({} bytes, {}x{})",
+                output.display(),
+                patched.len(),
+                width,
+                height
+            );
         }
     }
     Ok(())

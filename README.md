@@ -9,8 +9,10 @@ approving/rejecting, not editing each asset by hand.
 
 ## Status
 
-Early. The container format and the texture format are understood and implemented; nothing
-else is built yet. See `docs/ROADMAP.md`.
+Early, but the full texture pipeline mechanics are proven end to end on a real game file:
+unpack → transform → repack → verify all work. The transform step is still a placeholder
+(Lanczos resize, not a real AI model — see `docs/ROADMAP.md`). Nothing beyond textures is
+built yet.
 
 ## What's implemented (`src/`)
 
@@ -20,11 +22,15 @@ else is built yet. See `docs/ROADMAP.md`.
   `DataOffset`/`VolumeSize` match exactly; a full unpack → repack round trip reproduces
   identical file sizes and offsets).
 - **`ximg.rs`** — Risen 1/2 `._ximg` texture format: extract the embedded standard DDS
-  payload, read/patch the `Width`/`Height` property fields. Verified against 5 real
-  `._ximg` files (all decode to valid, viewable images).
+  payload, read/patch the `Width`/`Height` property fields (`ximg-patch`). Verified end to
+  end: a real 64x64 `._ximg` from the game was upscaled 4x and spliced back into a valid
+  256x256 `._ximg` that re-parses and re-decodes correctly.
+- **`tools/dxt3_encode.py`** — a small from-scratch DXT3/BC2 encoder (S3TC), used to produce
+  a real compressed DDS for the round-trip test above without depending on an external
+  image-compression library. Stands in for the eventual AI upscale step.
 
 Run `cargo build --release` then `./target/release/risenlab --help` for the CLI
-(`list`, `unpack`, `pack`, `ximg-to-dds`, `ximg-info`).
+(`list`, `unpack`, `pack`, `ximg-to-dds`, `ximg-info`, `ximg-patch`).
 
 ## Why these formats and not others
 

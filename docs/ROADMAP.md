@@ -6,13 +6,22 @@
 - [x] `._ximg` texture: read (extract DDS), understand write path (patch Width/Height + splice)
 - [x] Confirmed `.pXX` patch-volume distribution model (no redistribution of original assets)
 - [x] Decision on content-layer formats (materials/meshes): reuse `mimicry` out-of-process, don't reimplement
+- [x] Wire `ximg::replace_dds` into the CLI (`risenlab ximg-patch <in> <new_dds> <out> --width W --height H`)
+- [x] **Full texture pipeline round trip proven on a real game file**: `EditorBilboard_EVT_Sound_Forest._ximg`
+      (64x64) → extract DDS → 4x Lanczos upscale → re-encode as genuine DXT3 (`tools/dxt3_encode.py`, a
+      from-scratch S3TC/BC2 encoder — no external image-compression library needed) → `ximg-patch` splices
+      it back in → re-parsed and re-decoded successfully as a valid 256x256 image. Proves the mechanical
+      pipeline (unpack → transform → repack → verify) works; the transform step itself is still a placeholder
+      (Lanczos, not a real AI model) — see next item.
 
 ## Next
 
-- [ ] Wire `ximg::replace_dds` into the CLI (`risenlab ximg-patch <in> <new.dds> <out>`)
+- [ ] Replace the Lanczos placeholder in the pipeline with a real AI upscaler (e.g. Real-ESRGAN) as an
+      external process — the splice/patch mechanics around it already work, this is a drop-in swap
+- [ ] Extend `ximg-patch`/`replace_dds` to also patch `SkipMips` and `PixelFormat` when the AI step changes
+      mip count or output format (currently assumes DXT3 in, DXT3 out)
 - [ ] Test the zlib decompression path against a real compressed `.pak` entry (likely in `images.pak`)
 - [ ] Empirically confirm `.pXX` override/priority rule against the real game (needs Windows + Risen install)
-- [ ] First real AI step: wire an existing open upscaler (e.g. Real-ESRGAN) as an external process over an extracted DDS/PNG
 - [ ] End-to-end proof: unpack one real texture from `images.pak` → upscale → repack into a `.p01` → load in-game
 
 ## Later
