@@ -19,13 +19,20 @@
       `data/` (`.pak` and `.pXX`/`.0X` patch volumes), grouped by `compiled`/`common`. Verified against a
       synthetic install layout built from real `library.pak`/`materials.pak`. The `.lnk` parser hasn't been
       exercised against a real Windows-generated shortcut yet — untested edge case, see below.
+- [x] **Generalized `ximg-patch`** to also cover `SkipMips` and `PixelFormat`, not just dimensions
+      (`--skip-mips`, `--pixel-format`). A pixel format name of a different byte length now correctly
+      shifts `property_block_size`/`dds_offset` — verified both on synthetic fixtures and on the real
+      Forest texture (`DXT3` → `UNCOMPRESSED_RGBA`, +13 bytes, `dds_offset` moved from 265 to 278 exactly,
+      DDS signature confirmed at the new offset).
 
 ## Next
 
-- [ ] Replace the Lanczos placeholder in the pipeline with a real AI upscaler (e.g. Real-ESRGAN) as an
-      external process — the splice/patch mechanics around it already work, this is a drop-in swap
-- [ ] Extend `ximg-patch`/`replace_dds` to also patch `SkipMips` and `PixelFormat` when the AI step changes
-      mip count or output format (currently assumes DXT3 in, DXT3 out)
+- [ ] Replace the Lanczos placeholder in the pipeline with a real AI upscaler as an external process —
+      the splice/patch mechanics around it already work, this is meant to be a drop-in swap. First attempt
+      (auto-downloading a pretrained EDSR model via `super_image`/HuggingFace) was correctly blocked by
+      the session's security policy — autonomously fetching+running third-party model weights needs
+      explicit user sign-off on the specific model/source, not an agent decision. Needs that decision, or
+      to happen on the user's own machine under their control.
 - [ ] Test the zlib decompression path against a real compressed `.pak` entry (likely in `images.pak`)
 - [ ] Empirically confirm `.pXX` override/priority rule against the real game (needs Windows + Risen install)
 - [ ] End-to-end proof: unpack one real texture from `images.pak` → upscale → repack into a `.p01` → load in-game

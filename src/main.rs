@@ -35,6 +35,12 @@ enum Commands {
         width: i32,
         #[arg(long)]
         height: i32,
+        /// Only needed if the AI step changed the mip count
+        #[arg(long)]
+        skip_mips: Option<i32>,
+        /// Only needed if the AI step changed the pixel format (e.g. DXT3 -> DXT5)
+        #[arg(long)]
+        pixel_format: Option<String>,
     },
     /// Point at risen.exe (or a .lnk shortcut to it) and find every archive in the install —
     /// this is the whole "pick the exe, we take it from there" flow.
@@ -91,10 +97,18 @@ fn main() -> anyhow::Result<()> {
             output,
             width,
             height,
+            skip_mips,
+            pixel_format,
         } => {
             let original = std::fs::read(&input)?;
             let dds = std::fs::read(&new_dds)?;
-            let patched = ximg::replace_dds(&original, width, height, &dds)?;
+            let opts = ximg::ReplaceOptions {
+                width,
+                height,
+                skip_mips,
+                pixel_format: pixel_format.as_deref(),
+            };
+            let patched = ximg::replace_dds(&original, opts, &dds)?;
             std::fs::write(&output, &patched)?;
             println!(
                 "Wrote {} ({} bytes, {}x{})",
