@@ -72,6 +72,14 @@ enum Commands {
         edited_dir: PathBuf,
         patch_out_dir: PathBuf,
     },
+    /// Build a single self-contained HTML page showing original-vs-edited side by side for
+    /// every texture that changed since extraction — open it in a browser to review before
+    /// running apply-textures.
+    ReviewTextures {
+        manifest: PathBuf,
+        edited_dir: PathBuf,
+        out_html: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -211,6 +219,14 @@ fn main() -> anyhow::Result<()> {
                     println!("  {}", p.display());
                 }
             }
+        }
+        Commands::ReviewTextures {
+            manifest,
+            edited_dir,
+            out_html,
+        } => {
+            let count = batch::build_review_html(&manifest, &edited_dir, &out_html)?;
+            println!("Wrote {} ({count} changed texture(s))", out_html.display());
         }
         Commands::Discover { exe_or_shortcut } => {
             let exe = gamepath::resolve_shortcut(&exe_or_shortcut)?;

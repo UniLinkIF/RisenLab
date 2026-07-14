@@ -204,9 +204,48 @@ pub fn decode(dds_bytes: &[u8]) -> Result<DecodedImage> {
     })
 }
 
-/// Encodes RGBA8 pixel data into a standalone single-mip DDS file using the given D3D pixel
-/// format (normally the original texture's own format, so the round trip doesn't change
-/// what the engine expects to load).
+/// Box-filters a 2x2 (edge-clamped) block down to one pixel per channel — good enough for
+/// mip generation; not gamma-correct, but neither was leaving mips out entirely.
+fn downsample_half(rgba: &[u8], width: u32, height: u32) -> (u32, u32, Vec<u8>) {
+    let nw = (width / 2).max(1);
+    let nh = (height / 2).max(1);
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh {
+        for x in 0..nw {
+            let x0 = (x * 2).min(width - 1);
+            let x1 = (x * 2 + 1).min(width - 1);
+            let y0 = (y * 2).min(height - 1);
+            let y1 = (y * 2 + 1).min(height - 1);
+            for c in 0..4usize {
+                let sum = rgba[((y0 * width + x0) * 4) as usize + c] as u32
+                    + rgba[((y0 * width + x1) * 4) as usize + c] as u32
+                    + rgba[((y1 * width + x0) * 4) as usize + c] as u32
+                    + rgba[((y1 * width + x1) * 4) as usize + c] as u32;
+                out[((y * nw + x) * 4) as usize + c] = (sum / 4) as u8;
+            }
+        }
+    }
+    (nw, nh, out)
+}
+
+/// Builds the full mip chain (level 0 = the source image, down to 1x1), the layout every
+/// standard DDS mipmap chain uses and what the game's own textures ship with — a single-mip
+/// file works for viewing up close but can shimmer/alias at a distance.
+fn build_mip_chain(rgba: &[u8], width: u32, height: u32) -> Vec<(u32, u32, Vec<u8>)> {
+    let mut levels = vec![(width, height, rgba.to_vec())];
+    loop {
+        let &(w, h, ref data) = levels.last().unwrap();
+        if w == 1 && h == 1 {
+            break;
+        }
+        levels.push(downsample_half(data, w, h));
+    }
+    levels
+}
+
+/// Encodes RGBA8 pixel data into a standalone DDS file (with a full mip chain, level 0 down
+/// to 1x1) using the given D3D pixel format (normally the original texture's own format, so
+/// the round trip doesn't change what the engine expects to load).
 pub fn encode(width: u32, height: u32, rgba: &[u8], format: D3DFormat) -> Result<Vec<u8>> {
     if rgba.len() != (width as usize) * (height as usize) * 4 {
         bail!(
@@ -217,12 +256,14 @@ pub fn encode(width: u32, height: u32, rgba: &[u8], format: D3DFormat) -> Result
         );
     }
 
+    let levels = build_mip_chain(rgba, width, height);
+
     let mut dds = Dds::new_d3d(NewD3dParams {
         height,
         width,
         depth: None,
         format,
-        mipmap_levels: Some(1),
+        mipmap_levels: Some(levels.len() as u32),
         caps2: None,
     })?;
 
@@ -260,13 +301,16 @@ pub fn encode(width: u32, height: u32, rgba: &[u8], format: D3DFormat) -> Result
         _ => {}
     }
 
-    let body = if let Some(bc) = bc_format_for(format) {
-        let mut out = vec![0u8; bc.compressed_size(width as usize, height as usize)];
-        bc.compress(rgba, width as usize, height as usize, BcParams::default(), &mut out);
-        out
-    } else {
-        pack_uncompressed(rgba, format)?
-    };
+    let mut body = Vec::new();
+    for (lw, lh, ldata) in &levels {
+        if let Some(bc) = bc_format_for(format) {
+            let mut level_body = vec![0u8; bc.compressed_size(*lw as usize, *lh as usize)];
+            bc.compress(ldata, *lw as usize, *lh as usize, BcParams::default(), &mut level_body);
+            body.extend_from_slice(&level_body);
+        } else {
+            body.extend_from_slice(&pack_uncompressed(ldata, format)?);
+        }
+    }
 
     // Not `dds.get_mut_data(0)` — that accessor re-derives the format from the header to
     // compute the valid data range, which fails the same way `get_d3d_format()` does for
@@ -303,6 +347,31 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn build_mip_chain_goes_all_the_way_to_1x1() {
+        let (w, h) = (16, 8);
+        let levels = build_mip_chain(&checkerboard(w, h), w, h);
+        // 16x8 -> 8x4 -> 4x2 -> 2x1 -> 1x1
+        let dims: Vec<(u32, u32)> = levels.iter().map(|(w, h, _)| (*w, *h)).collect();
+        assert_eq!(dims, vec![(16, 8), (8, 4), (4, 2), (2, 1), (1, 1)]);
+        for (lw, lh, data) in &levels {
+            assert_eq!(data.len(), (*lw as usize) * (*lh as usize) * 4);
+        }
+    }
+
+    #[test]
+    fn encode_writes_a_full_mip_chain_and_decode_still_returns_only_the_top_level() {
+        let (w, h) = (32, 32);
+        let original = checkerboard(w, h);
+        let dds_bytes = encode(w, h, &original, D3DFormat::DXT5).unwrap();
+
+        let dds = ddsfile::Dds::read(&dds_bytes[..]).unwrap();
+        assert_eq!(dds.get_num_mipmap_levels(), 6, "32x32 -> 16x16 -> 8x8 -> 4x4 -> 2x2 -> 1x1 is 6 levels");
+
+        let decoded = decode(&dds_bytes).unwrap();
+        assert_eq!((decoded.width, decoded.height), (w, h), "decode must still return only the top-level mip");
     }
 
     #[test]

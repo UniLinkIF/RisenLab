@@ -267,3 +267,102 @@ pub fn apply(manifest_path: &Path, edited_dir: &Path, patch_out_dir: &Path) -> R
     fs::remove_dir_all(&stage_root).ok();
     Ok(written)
 }
+
+const BASE64_ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn base64_encode(data: &[u8]) -> String {
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        let n = ((b0 as u32) << 16) | ((b1 as u32) << 8) | (b2 as u32);
+        out.push(BASE64_ALPHABET[((n >> 18) & 0x3F) as usize] as char);
+        out.push(BASE64_ALPHABET[((n >> 12) & 0x3F) as usize] as char);
+        out.push(if chunk.len() > 1 { BASE64_ALPHABET[((n >> 6) & 0x3F) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { BASE64_ALPHABET[(n & 0x3F) as usize] as char } else { '=' });
+    }
+    out
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Builds a single, self-contained HTML page (images embedded as base64 data URIs, no
+/// external files) showing original-vs-edited side by side for every PNG that actually
+/// changed since extraction — a cheap stand-in for a dedicated review UI: open it in any
+/// browser before running `apply` to see exactly what's about to be patched.
+pub fn build_review_html(manifest_path: &Path, edited_dir: &Path, out_html: &Path) -> Result<usize> {
+    let entries = parse_manifest(manifest_path)?;
+    let original_dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
+
+    let mut rows = String::new();
+    let mut changed_count = 0usize;
+    for e in &entries {
+        let edited_path = edited_dir.join(&e.png_rel);
+        if !edited_path.exists() {
+            continue;
+        }
+        let edited_bytes = fs::read(&edited_path)?;
+        if fnv1a(&edited_bytes) == e.hash {
+            continue; // unchanged since extraction
+        }
+        changed_count += 1;
+
+        let original_path = original_dir.join(&e.png_rel);
+        let original_bytes = fs::read(&original_path).unwrap_or_default();
+
+        rows.push_str(&format!(
+            r#"<div class="row"><h3>{}</h3><div class="pair">
+<figure><img src="data:image/png;base64,{}"><figcaption>original</figcaption></figure>
+<figure><img src="data:image/png;base64,{}"><figcaption>edited</figcaption></figure>
+</div></div>
+"#,
+            html_escape(&e.entry_path),
+            base64_encode(&original_bytes),
+            base64_encode(&edited_bytes),
+        ));
+    }
+
+    let html = format!(
+        r#"<!doctype html>
+<html><head><meta charset="utf-8"><title>RisenLab texture review</title>
+<style>
+body {{ font-family: sans-serif; background: #111; color: #eee; padding: 1rem; }}
+.row {{ margin-bottom: 2rem; border-bottom: 1px solid #333; padding-bottom: 1rem; }}
+.pair {{ display: flex; gap: 1rem; flex-wrap: wrap; }}
+figure {{ margin: 0; }}
+img {{ max-width: 400px; max-height: 400px; image-rendering: pixelated; border: 1px solid #444; }}
+figcaption {{ text-align: center; color: #999; }}
+</style></head>
+<body>
+<h1>{changed_count} changed texture(s)</h1>
+{rows}
+</body></html>
+"#
+    );
+
+    fs::write(out_html, html)?;
+    Ok(changed_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base64_matches_known_vectors() {
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn fnv1a_is_deterministic_and_sensitive_to_content() {
+        assert_eq!(fnv1a(b"hello"), fnv1a(b"hello"));
+        assert_ne!(fnv1a(b"hello"), fnv1a(b"hellp"));
+    }
+}

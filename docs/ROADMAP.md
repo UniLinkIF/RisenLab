@@ -56,7 +56,18 @@
       all 1342 textures, inverted two PNGs (an achievement icon + the 1024x1024 normal map) in an
       ordinary image editor stand-in, ran `apply-textures` — it correctly built a minimal 2-entry
       `compiled/images.p01` (not all 1342), and the patched entries re-parse and re-decode with the
-      edit visibly applied.
+      edit visibly applied. Test patch built at
+      `%TEMP%/risen_patch_out2/compiled/images.p01` — not yet copied into the real game install
+      (needs the user to do it, or explicit sign-off to modify that folder; see below).
+- [x] **Full mip chain on encode** (`dds::build_mip_chain`/`downsample_half`): `png-to-ximg`/
+      `apply-textures` now write a proper mip chain (box-filter downsample, level 0 down to 1x1)
+      instead of a single level. Verified on the real 1024x1024 normal map: re-encoded file size
+      matches the original's real mip-chain size almost exactly, and still decodes visually
+      identical (decode always reads only the top level regardless of chain length).
+- [x] **Review HTML** (`risenlab review-textures`): a single self-contained HTML page (images
+      inlined as base64, no external files) showing original-vs-edited side by side for every
+      texture that changed since extraction — a cheap stand-in for a dedicated review UI, open it
+      in any browser before running `apply-textures`.
 
 ## Next
 
@@ -66,24 +77,30 @@
       the session's security policy — autonomously fetching+running third-party model weights needs
       explicit user sign-off on the specific model/source, not an agent decision. Needs that decision, or
       to happen on the user's own machine under their control.
-- [ ] Empirically confirm `.pXX` override/priority rule against the real game — now unblocked (Windows +
-      real Risen install both present), just needs someone to actually launch the game and look;
-      not yet done this session.
-- [ ] End-to-end proof: load the `images.p01` patch built above in-game and visually confirm the
-      inverted-color texture actually shows up (mechanical pipeline is proven; in-game load is not).
-- [ ] Mip chain: `png-to-ximg`/`apply-textures` currently always write a single-mip DDS, discarding
-      the original's mip chain (matches the earlier proven Forest-icon test, which was also
-      single-mip) — likely fine visually up close but may shimmer at a distance; no mip regeneration
-      implemented yet.
+- [ ] Empirically confirm `.pXX` override/priority rule against the real game, and visually confirm the
+      inverted-color test patch actually shows up in-game — now technically unblocked (Windows + real
+      Risen install both present, test patch already built), but copying the patch into the real game's
+      `data/compiled/` folder was declined by the session's safety policy (modifying a folder the user
+      pointed at as reference material, not something they explicitly authorized changing) and needs
+      either the user to copy the file themselves or explicit sign-off to do it directly.
+- [ ] Materials (`.xmat`) / meshes (`.xmsh`/`.xmac`) / animations (`.xact`) support — scope expanded to
+      include these (previously texture-only). Researched `mimicry` (github.com/Baltram/rmtools,
+      GPL-3.0) as the out-of-process helper: it's pure portable C++ (no Qt/MFC dependency, builds
+      cleanly), and already has a clean API for everything needed — `mCGenomeMaterial::Load/Save` +
+      generic `GetProperty`/`SetProperty` for materials (no need to hand-derive the ~230-class property
+      table, it's already inside), `mCXmshReader`/`mCXmshWriter` + `mCObjReader`/`mCObjWriter` for
+      mesh↔OBJ (Blender-editable), `mCXactReader` for animations — all built around a common `mCScene`
+      representation. Vendoring the GPL source and building the actual helper binary was declined by
+      the session's safety policy (the scope-expansion instruction arrived over an external/untrusted
+      channel, not this session directly) — needs the user to confirm directly in a trusted session
+      before that specific step proceeds. Everything else about the plan above is solid and ready to
+      execute once confirmed.
 - [ ] Handle the ~4 remaining known-exotic DDS pixel formats we haven't hit yet in real assets
       (DX10/DXGI header, ATI1/ATI2, YUV) — everything encountered in the real game so far decodes.
 
 ## Later
 
 - [ ] Compression on write (`pak::write_archive_from_dir` currently always uncompressed)
-- [ ] Normal map / roughness generation step
 - [ ] Orchestrator: batch job queue, caching, retry
 - [ ] Asset versioning/approval store
-- [ ] Review UI (Tauri + Svelte + three.js)
-- [ ] Materials/meshes helper (compiled `mimicry`, called out-of-process)
-- [ ] Model/animation pipeline: export/preview/import only, no AI enhancement (no mature tooling exists for this yet)
+- [ ] Review UI beyond the static HTML page (Tauri + Svelte + three.js)
