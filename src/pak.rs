@@ -248,9 +248,9 @@ impl PakArchive {
     }
 }
 
-/// Build a brand-new, uncompressed `.pak`/`.pXX` archive from a flat directory tree.
-/// Intended for producing patch volumes (see docs/p0x-patches.md), not for editing an
-/// existing archive in place.
+/// Build a brand-new, uncompressed `.pak`/`.pXX` archive from a directory tree, preserving
+/// subfolder structure. Intended for producing patch volumes (see docs/p0x-patches.md), not
+/// for editing an existing archive in place.
 pub fn write_archive_from_dir<P: AsRef<Path>>(src_dir: P, out_path: P) -> io::Result<()> {
     let src_dir = src_dir.as_ref();
     let mut file_list = Vec::new();
@@ -282,7 +282,8 @@ pub fn write_archive_from_dir<P: AsRef<Path>>(src_dir: P, out_path: P) -> io::Re
     }
 
     let root_offset = out.stream_position()?;
-    write_flat_directory(&mut out, &written)?;
+    let tree = build_write_tree(&written);
+    write_directory_tree(&mut out, &tree)?;
     let volume_size = out.stream_position()?;
 
     out.seek(SeekFrom::Start(root_offset_pos))?;
@@ -317,31 +318,91 @@ fn write_name<W: Write>(w: &mut W, name: &str) -> io::Result<()> {
     Ok(())
 }
 
-/// Writes every file into a single flat root directory (no subfolders) — sufficient for
-/// patch volumes where all entries share the base archive's directory, matching what we
-/// observed in materials.pak (516 files, all directly under root).
-fn write_flat_directory<W: Write>(w: &mut W, files: &[(String, u64, u32)]) -> io::Result<()> {
+/// In-memory shape of the directory tree being written, built from a flat list of
+/// (relative_path, offset, size) by splitting each path on `/`.
+enum WriteNode {
+    File { name: String, offset: u64, size: u32 },
+    Dir { name: String, children: Vec<WriteNode> },
+}
+
+fn build_write_tree(files: &[(String, u64, u32)]) -> Vec<WriteNode> {
+    let mut root: Vec<WriteNode> = Vec::new();
+    for (rel_path, offset, size) in files {
+        let parts: Vec<&str> = rel_path.split('/').collect();
+        insert_write_node(&mut root, &parts, *offset, *size);
+    }
+    root
+}
+
+fn insert_write_node(nodes: &mut Vec<WriteNode>, parts: &[&str], offset: u64, size: u32) {
+    match parts {
+        [] => {}
+        [name] => nodes.push(WriteNode::File {
+            name: (*name).to_string(),
+            offset,
+            size,
+        }),
+        [dir_name, rest @ ..] => {
+            let idx = nodes
+                .iter()
+                .position(|n| matches!(n, WriteNode::Dir { name, .. } if name == dir_name))
+                .unwrap_or_else(|| {
+                    nodes.push(WriteNode::Dir {
+                        name: (*dir_name).to_string(),
+                        children: Vec::new(),
+                    });
+                    nodes.len() - 1
+                });
+            if let WriteNode::Dir { children, .. } = &mut nodes[idx] {
+                insert_write_node(children, rest, offset, size);
+            }
+        }
+    }
+}
+
+/// Writes the root directory record: no leading discriminator (matches how `read_directory`
+/// is invoked at the root), then every child with its own discriminator attributes field.
+fn write_directory_tree<W: Write>(w: &mut W, nodes: &[WriteNode]) -> io::Result<()> {
     write_name(w, "")?; // root has no name
     w.write_all(&0u64.to_le_bytes())?; // created
     w.write_all(&0u64.to_le_bytes())?; // accessed
     w.write_all(&0u64.to_le_bytes())?; // modified
     w.write_all(&DIR_ATTR.to_le_bytes())?; // directory attribute
-    w.write_all(&(files.len() as u32).to_le_bytes())?; // count
+    w.write_all(&(nodes.len() as u32).to_le_bytes())?; // count
+    for node in nodes {
+        write_node(w, node)?;
+    }
+    Ok(())
+}
 
-    for (rel_path, offset, size) in files {
-        let name = rel_path.rsplit('/').next().unwrap_or(rel_path);
-        let file_attr = 0x0000_0020u32; // FILE_ATTRIBUTE_ARCHIVE, not a directory -> discriminator
-        w.write_all(&file_attr.to_le_bytes())?; // discriminator (no DIR_ATTR bit set)
-        write_name(w, name)?;
-        w.write_all(&offset.to_le_bytes())?; // data_offset
-        w.write_all(&0u64.to_le_bytes())?; // created
-        w.write_all(&0u64.to_le_bytes())?; // accessed
-        w.write_all(&0u64.to_le_bytes())?; // modified
-        w.write_all(&file_attr.to_le_bytes())?; // file_attributes
-        w.write_all(&0u32.to_le_bytes())?; // encryption = none
-        w.write_all(&FileCompression::None.to_u32().to_le_bytes())?; // compression = none
-        w.write_all(&size.to_le_bytes())?; // data_size
-        w.write_all(&size.to_le_bytes())?; // file_size
+fn write_node<W: Write>(w: &mut W, node: &WriteNode) -> io::Result<()> {
+    match node {
+        WriteNode::File { name, offset, size } => {
+            let file_attr = 0x0000_0020u32; // FILE_ATTRIBUTE_ARCHIVE, not a directory
+            w.write_all(&file_attr.to_le_bytes())?; // discriminator (no DIR_ATTR bit set)
+            write_name(w, name)?;
+            w.write_all(&offset.to_le_bytes())?; // data_offset
+            w.write_all(&0u64.to_le_bytes())?; // created
+            w.write_all(&0u64.to_le_bytes())?; // accessed
+            w.write_all(&0u64.to_le_bytes())?; // modified
+            w.write_all(&file_attr.to_le_bytes())?; // file_attributes
+            w.write_all(&0u32.to_le_bytes())?; // encryption = none
+            w.write_all(&FileCompression::None.to_u32().to_le_bytes())?; // compression = none
+            w.write_all(&size.to_le_bytes())?; // data_size
+            w.write_all(&size.to_le_bytes())?; // file_size
+        }
+        WriteNode::Dir { name, children } => {
+            w.write_all(&DIR_ATTR.to_le_bytes())?; // discriminator
+            write_name(w, name)?;
+            w.write_all(&0u64.to_le_bytes())?; // created
+            w.write_all(&0u64.to_le_bytes())?; // accessed
+            w.write_all(&0u64.to_le_bytes())?; // modified
+            w.write_all(&DIR_ATTR.to_le_bytes())?; // file_attributes
+            w.write_all(&(children.len() as u32).to_le_bytes())?; // count
+            for child in children {
+                write_node(w, child)?;
+            }
+        }
     }
     Ok(())
 }
@@ -351,4 +412,50 @@ fn zlib_compress(data: &[u8]) -> io::Result<Vec<u8>> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(data)?;
     encoder.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Builds a source directory with nested subfolders (mirroring a real `images.pak` tree,
+    /// e.g. `Level/...`, `Animation/Monster/...`), writes it to an archive, reads it back, and
+    /// checks every file round-trips with its subfolder path and content intact.
+    #[test]
+    fn write_archive_preserves_subfolder_structure() {
+        let tmp_dir = std::env::temp_dir().join(format!("risenlab_pak_write_test_{}", std::process::id()));
+        let src_dir = tmp_dir.join("src");
+        std::fs::create_dir_all(src_dir.join("Level")).unwrap();
+        std::fs::create_dir_all(src_dir.join("Animation").join("Monster")).unwrap();
+
+        let files: &[(&str, &[u8])] = &[
+            ("root_file.txt", b"root content"),
+            ("Level/Nat_Stone.txt", b"stone texture data"),
+            ("Animation/Monster/Chicken.txt", b"chicken armor data"),
+        ];
+        for (rel, content) in files {
+            let full = src_dir.join(rel);
+            std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+            std::fs::write(&full, content).unwrap();
+        }
+
+        let archive_path = tmp_dir.join("test.pak");
+        write_archive_from_dir(&src_dir, &archive_path).unwrap();
+
+        let mut archive = PakArchive::open(&archive_path).unwrap();
+        let entries = archive.files();
+        assert_eq!(entries.len(), files.len());
+
+        for (rel, content) in files {
+            let expected_path = format!("/{rel}");
+            let entry = entries
+                .iter()
+                .find(|e| e.path == expected_path)
+                .unwrap_or_else(|| panic!("missing entry for {expected_path}, got {entries:?}"));
+            let data = archive.read_file(entry).unwrap();
+            assert_eq!(&data, content, "content mismatch for {expected_path}");
+        }
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
 }

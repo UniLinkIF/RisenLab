@@ -1,3 +1,5 @@
+mod batch;
+mod dds;
 mod gamepath;
 mod pak;
 mod ximg;
@@ -45,6 +47,31 @@ enum Commands {
     /// Point at risen.exe (or a .lnk shortcut to it) and find every archive in the install —
     /// this is the whole "pick the exe, we take it from there" flow.
     Discover { exe_or_shortcut: PathBuf },
+    /// Decode a ._ximg texture's embedded DDS to a plain PNG — viewable and editable in any
+    /// ordinary image tool, no DDS support required.
+    XimgToPng { input: PathBuf, output: PathBuf },
+    /// Splice a replacement PNG (any dimensions) into a copy of an existing ._ximg. Width,
+    /// height and pixel format are all auto-detected — from the new PNG's dimensions and the
+    /// original texture's own compression format — so no manual flags are needed.
+    PngToXimg {
+        input: PathBuf,
+        new_png: PathBuf,
+        output: PathBuf,
+    },
+    /// Point at the game (exe or .lnk) and extract every texture in every archive to a plain
+    /// PNG, mirrored under `out_dir` with a manifest.tsv — the "whole game as a folder of
+    /// photos to edit" step.
+    ExtractTextures {
+        exe_or_shortcut: PathBuf,
+        out_dir: PathBuf,
+    },
+    /// Take a manifest from `extract-textures` plus a directory of (edited/regenerated) PNGs,
+    /// and build fresh, minimal .pXX patch volumes containing only what actually changed.
+    ApplyTextures {
+        manifest: PathBuf,
+        edited_dir: PathBuf,
+        patch_out_dir: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -117,6 +144,73 @@ fn main() -> anyhow::Result<()> {
                 width,
                 height
             );
+        }
+        Commands::XimgToPng { input, output } => {
+            let data = std::fs::read(&input)?;
+            let dds_bytes = ximg::extract_dds(&data)?;
+            let decoded = dds::decode(dds_bytes)?;
+            let img = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba)
+                .ok_or_else(|| anyhow::anyhow!("decoded RGBA buffer does not match its own dimensions"))?;
+            img.save(&output)?;
+            println!(
+                "Wrote {} ({}x{})",
+                output.display(),
+                decoded.width,
+                decoded.height
+            );
+        }
+        Commands::PngToXimg {
+            input,
+            new_png,
+            output,
+        } => {
+            let original = std::fs::read(&input)?;
+            let original_dds = ximg::extract_dds(&original)?;
+            let original_parsed = ddsfile::Dds::read(original_dds)?;
+            let format = dds::resolve_format(&original_parsed)
+                .ok_or_else(|| anyhow::anyhow!("original texture's DDS pixel format is not a recognized D3D format"))?;
+
+            let img = image::ImageReader::open(&new_png)?.decode()?.to_rgba8();
+            let (width, height) = img.dimensions();
+            let new_dds = dds::encode(width, height, img.as_raw(), format)?;
+
+            let opts = ximg::ReplaceOptions {
+                width: width as i32,
+                height: height as i32,
+                skip_mips: None,
+                pixel_format: None,
+            };
+            let patched = ximg::replace_dds(&original, opts, &new_dds)?;
+            std::fs::write(&output, &patched)?;
+            println!(
+                "Wrote {} ({} bytes, {}x{})",
+                output.display(),
+                patched.len(),
+                width,
+                height
+            );
+        }
+        Commands::ExtractTextures {
+            exe_or_shortcut,
+            out_dir,
+        } => {
+            let count = batch::extract_all(&exe_or_shortcut, &out_dir)?;
+            println!("Extracted {count} textures to {}", out_dir.display());
+        }
+        Commands::ApplyTextures {
+            manifest,
+            edited_dir,
+            patch_out_dir,
+        } => {
+            let written = batch::apply(&manifest, &edited_dir, &patch_out_dir)?;
+            if written.is_empty() {
+                println!("No changed textures found — nothing to patch.");
+            } else {
+                println!("Wrote {} patch volume(s):", written.len());
+                for p in &written {
+                    println!("  {}", p.display());
+                }
+            }
         }
         Commands::Discover { exe_or_shortcut } => {
             let exe = gamepath::resolve_shortcut(&exe_or_shortcut)?;

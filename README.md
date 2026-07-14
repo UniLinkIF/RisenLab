@@ -9,10 +9,15 @@ approving/rejecting, not editing each asset by hand.
 
 ## Status
 
-Early, but the full texture pipeline mechanics are proven end to end on a real game file:
-unpack → transform → repack → verify all work. The transform step is still a placeholder
-(Lanczos resize, not a real AI model — see `docs/ROADMAP.md`). Nothing beyond textures is
-built yet.
+The full texture pipeline works end to end against the real, whole game install: point at
+`Risen.exe`, every texture in every archive extracts to a plain PNG (`extract-textures`),
+edit/regenerate whichever ones you want, and `apply-textures` builds a minimal `.pXX` patch
+containing only what changed. Verified at scale — 1342/1342 real textures extracted with 0
+failures, a real edit-and-patch cycle produced a correct 2-entry patch, and a 590MB real
+archive round-trips byte-identical through the `.pak` writer. The AI step itself is still a
+placeholder (Lanczos resize, not a real model — see `docs/ROADMAP.md`); nothing beyond
+textures (materials/meshes/animations) is built yet, and there's no review UI — you point an
+ordinary image editor at the extracted PNG folder.
 
 ## What's implemented (`src/`)
 
@@ -22,20 +27,34 @@ built yet.
   `DataOffset`/`VolumeSize` match exactly; a full unpack → repack round trip reproduces
   identical file sizes and offsets).
 - **`ximg.rs`** — Risen 1/2 `._ximg` texture format: extract the embedded standard DDS
-  payload, read/patch the `Width`/`Height` property fields (`ximg-patch`). Verified end to
-  end: a real 64x64 `._ximg` from the game was upscaled 4x and spliced back into a valid
-  256x256 `._ximg` that re-parses and re-decodes correctly.
-- **`tools/dxt3_encode.py`** — a small from-scratch DXT3/BC2 encoder (S3TC), used to produce
-  a real compressed DDS for the round-trip test above without depending on an external
-  image-compression library. Stands in for the eventual AI upscale step.
+  payload, read/patch the `Width`/`Height`/`SkipMips`/`PixelFormat` property fields
+  (`ximg-patch`).
+- **`dds.rs`** — decodes/encodes the DDS payload itself to plain RGBA8, so a texture round-
+  trips through an ordinary PNG instead of requiring DDS-aware tools: DXT1/3/5 via
+  `texpresso` (pure-Rust, MIT, from-scratch S3TC — not the GPL `mimicry` codec), plus
+  uncompressed formats at any byte-aligned bit depth (`A8R8G8B8`, `A8B8G8R8`, `L8`, `A8`, ...)
+  via generic channel-bitmask packing. Verified against real textures from the game,
+  including a 1024x1024 normal map and two 8bpp single-channel formats that needed real
+  bug fixes to `ddsfile`'s format detection to support.
+- **`batch.rs`** — the whole-game conveyor: `extract-textures` walks every discovered
+  archive and decodes every `._ximg` to a mirrored tree of PNGs plus a manifest;
+  `apply-textures` re-encodes only the PNGs that changed (by content hash) and packs them
+  into fresh `.pXX` patches, one per source archive. Run against the real game: 1342/1342
+  textures extracted, and a real edit-two-PNGs-then-patch cycle produced a correct, minimal
+  2-entry patch.
 - **`gamepath.rs`** — "point at `Risen.exe` (or a `.lnk` shortcut to it), we take it from
   there": resolves a Windows shortcut to its target (own minimal `.lnk` parser, no PowerShell
-  needed), walks up from the exe to find the game root, then recursively finds every archive
-  under `data/`. This is meant to be the *only* manual step in the eventual app — everything
-  downstream (which `.pak`s exist, what's in them) is discovered automatically.
+  needed — including the ANSI-codepage decoding real non-ASCII install paths need), walks up
+  from the exe to find the game root, then recursively finds every archive under `data/`.
+  This is the *only* manual step in the app — everything downstream (which `.pak`s exist,
+  what's in them) is discovered automatically. Verified against a real Windows-generated
+  `.lnk` to a real install.
+- **`tools/dxt3_encode.py`** — a small from-scratch DXT3/BC2 encoder (S3TC), used for an
+  early proof-of-concept round trip before `dds.rs` existed; superseded by it for normal use.
 
-Run `cargo build --release` then `./target/release/risenlab --help` for the CLI
-(`list`, `unpack`, `pack`, `ximg-to-dds`, `ximg-info`, `ximg-patch`, `discover`).
+Run `cargo build --release` then `./target/release/risenlab --help` for the CLI (`list`,
+`unpack`, `pack`, `ximg-to-dds`, `ximg-info`, `ximg-patch`, `ximg-to-png`, `png-to-ximg`,
+`discover`, `extract-textures`, `apply-textures`).
 
 ## Why these formats and not others
 

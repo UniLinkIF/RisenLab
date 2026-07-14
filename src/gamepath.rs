@@ -8,6 +8,31 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// `LocalBasePath` (the non-Unicode variant) is encoded in the system's active ANSI codepage
+/// at the time the shortcut was created, not UTF-8 — decoding it as UTF-8 corrupts any
+/// non-ASCII path (confirmed on a real shortcut pointing through a Cyrillic folder name).
+/// On the same machine the shortcut was made on (the common case for resolving a local
+/// Desktop/Start Menu shortcut), the current process's ANSI codepage matches, so
+/// `MultiByteToWideChar(CP_ACP, ...)` decodes it correctly.
+#[cfg(windows)]
+fn decode_ansi_path(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_ACP};
+    unsafe {
+        let wide_len = MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), bytes.len() as i32, std::ptr::null_mut(), 0);
+        if wide_len <= 0 {
+            return String::from_utf8_lossy(bytes).into_owned();
+        }
+        let mut wide = vec![0u16; wide_len as usize];
+        MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), bytes.len() as i32, wide.as_mut_ptr(), wide_len);
+        String::from_utf16_lossy(&wide)
+    }
+}
+
+#[cfg(not(windows))]
+fn decode_ansi_path(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
 /// Resolves a Windows `.lnk` shortcut to its target path. If `path` isn't a `.lnk`, it's
 /// returned unchanged (so callers can pass either a shortcut or a direct .exe path).
 pub fn resolve_shortcut(path: &Path) -> io::Result<PathBuf> {
@@ -57,18 +82,20 @@ fn parse_lnk_target(data: &[u8]) -> Option<String> {
     let link_info_size = u32::from_le_bytes(data.get(offset..offset + 4)?.try_into().ok()?) as usize;
     let link_info = data.get(link_info_start..link_info_start + link_info_size)?;
 
-    // LinkInfoHeaderSize at +4, LinkInfoFlags at +8, LocalBasePathOffset at +12
-    // (LocalBasePathOffsetUnicode at +28..32 only present when LinkInfoHeaderSize >= 0x24).
+    // LinkInfoHeaderSize at +4, LinkInfoFlags at +8, VolumeIDOffset at +12,
+    // LocalBasePathOffset at +16 (LocalBasePathOffsetUnicode at +28..32 only present when
+    // LinkInfoHeaderSize >= 0x24). Confirmed against a real Windows-generated .lnk: the
+    // offset actually landed on a control byte from VolumeID until this was fixed to +16.
     let link_info_flags = u32::from_le_bytes(link_info.get(8..12)?.try_into().ok()?);
     const VOLUME_ID_AND_LOCAL_BASE_PATH: u32 = 0x1;
     if link_info_flags & VOLUME_ID_AND_LOCAL_BASE_PATH == 0 {
         return None;
     }
     let local_base_path_offset =
-        u32::from_le_bytes(link_info.get(12..16)?.try_into().ok()?) as usize;
+        u32::from_le_bytes(link_info.get(16..20)?.try_into().ok()?) as usize;
     let path_bytes = &link_info[local_base_path_offset..];
     let end = path_bytes.iter().position(|&b| b == 0)?;
-    Some(String::from_utf8_lossy(&path_bytes[..end]).into_owned())
+    Some(decode_ansi_path(&path_bytes[..end]))
 }
 
 const ARCHIVE_SUBDIRS: &[&str] = &["compiled", "common"];
@@ -139,6 +166,45 @@ fn walk_for_archives(dir: &Path, group: &str, out: &mut Vec<DiscoveredArchive>) 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Builds a synthetic but spec-accurate `.lnk` buffer: header + a minimal LinkInfo
+    /// (no `LinkTargetIDList`, matching real MS-SHLLINK field offsets) pointing at
+    /// `target_path`. Regression fixture for a real bug: the parser originally read
+    /// `LocalBasePathOffset` from struct offset +12 (actually `VolumeIDOffset`) instead of
+    /// +16, discovered by testing against a real Windows-generated shortcut.
+    fn synthetic_lnk(target_path: &str) -> Vec<u8> {
+        const SHELL_LINK_CLSID: [u8; 16] = [
+            0x01, 0x14, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0xC0, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x46,
+        ];
+        let mut buf = vec![0u8; 76];
+        buf[0..4].copy_from_slice(&0x4Cu32.to_le_bytes());
+        buf[4..20].copy_from_slice(&SHELL_LINK_CLSID);
+        const HAS_LINK_INFO: u32 = 0x0000_0002;
+        buf[20..24].copy_from_slice(&HAS_LINK_INFO.to_le_bytes());
+
+        let mut path_bytes = target_path.as_bytes().to_vec();
+        path_bytes.push(0);
+        let local_base_path_offset: u32 = 28; // right after the 28-byte LinkInfoHeader
+        let link_info_size = 28 + path_bytes.len() as u32;
+
+        buf.extend_from_slice(&link_info_size.to_le_bytes()); // LinkInfoSize
+        buf.extend_from_slice(&28u32.to_le_bytes()); // LinkInfoHeaderSize
+        buf.extend_from_slice(&1u32.to_le_bytes()); // LinkInfoFlags: VOLUME_ID_AND_LOCAL_BASE_PATH
+        buf.extend_from_slice(&28u32.to_le_bytes()); // VolumeIDOffset (unused by parser)
+        buf.extend_from_slice(&local_base_path_offset.to_le_bytes()); // LocalBasePathOffset
+        buf.extend_from_slice(&0u32.to_le_bytes()); // CommonNetworkRelativeLinkOffset
+        buf.extend_from_slice(&0u32.to_le_bytes()); // CommonPathSuffixOffset
+        buf.extend_from_slice(&path_bytes);
+        buf
+    }
+
+    #[test]
+    fn parses_local_base_path_from_synthetic_link_info() {
+        let data = synthetic_lnk(r"C:\Games\Risen\bin\Risen.exe");
+        let target = parse_lnk_target(&data).expect("should parse a target path");
+        assert_eq!(target, r"C:\Games\Risen\bin\Risen.exe");
+    }
 
     #[test]
     fn recognizes_archive_extensions() {
