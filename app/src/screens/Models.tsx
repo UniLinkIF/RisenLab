@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import type { LibraryEntry, MeshEntry } from "../lib/types";
 import { listLibrary, listMeshes, meshObjUrl, meshTextureRefs, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
+import { findTextureEntryForBaseName } from "../lib/materials";
 import FolderTree from "../components/FolderTree";
 import Model3DViewer, { type ViewMode } from "../components/Model3DViewer";
 import SearchableList from "../components/SearchableList";
@@ -41,6 +42,10 @@ export default function Models({ lang }: Props) {
   const [normalUrl, setNormalUrl] = useState<string | null>(null);
   const [showingGenerated, setShowingGenerated] = useState(false);
   const [generating, setGenerating] = useState(false);
+  // True after the user explicitly picks a texture by hand — per-material auto-resolution is
+  // then suspended so the explicit choice actually shows on the whole mesh instead of being
+  // overridden per submesh. Reset whenever a new mesh's auto-match runs.
+  const [manualTexture, setManualTexture] = useState(false);
 
   useEffect(() => {
     listMeshes()
@@ -95,6 +100,7 @@ export default function Models({ lang }: Props) {
         setDiffuseEntry(refs.diffuse ? findTextureByBaseName(textures, refs.diffuse) : null);
         setNormalEntry(refs.normal ? findTextureByBaseName(textures, refs.normal) : null);
         setShowingGenerated(false);
+        setManualTexture(false);
       })
       .catch(() => {});
     return () => {
@@ -137,9 +143,21 @@ export default function Models({ lang }: Props) {
     } else if (texturePicker === "normal") {
       setNormalEntry(entry);
     }
+    setManualTexture(true);
     setTexturePicker(null);
     setTextureQuery("");
   }
+
+  // Per-material texture resolution for multi-material meshes (see the matching prop doc in
+  // Model3DViewer): a material's `usemtl` name is its diffuse texture's base name in this
+  // game's real data, so the library lookup is the same one the auto-match uses.
+  const resolveTexture = useCallback(
+    async (baseName: string) => {
+      const entry = findTextureEntryForBaseName(textures, baseName);
+      return entry ? readTextureDataUrl(entry.pngRel) : null;
+    },
+    [textures],
+  );
 
   async function handleGenerate() {
     if (!diffuseEntry) return;
@@ -225,7 +243,16 @@ export default function Models({ lang }: Props) {
               {lang === "uk" ? "Конвертація мешу…" : "Converting mesh…"}
             </div>
           ) : (
-            <Model3DViewer key={selectedMesh.entryPath} objUrl={objUrl} diffuseUrl={diffuseUrl} normalUrl={normalUrl} mode={mode} />
+            <Model3DViewer
+              key={selectedMesh.entryPath}
+              objUrl={objUrl}
+              diffuseUrl={diffuseUrl}
+              normalUrl={normalUrl}
+              mode={mode}
+              // An explicit user pick (or the generated-texture preview) must win over
+              // per-material auto-resolution, so it's suspended for those.
+              resolveTexture={manualTexture || showingGenerated ? null : resolveTexture}
+            />
           )}
         </div>
       </div>

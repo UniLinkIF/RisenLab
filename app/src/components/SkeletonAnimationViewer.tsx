@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
+import { groupFacesByMaterial } from "../lib/materials";
 import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
 import type { BoneMotion, SkeletonNode, SkinnedMeshData } from "../lib/types";
 
@@ -37,6 +38,12 @@ interface Props {
   objUrl?: string | null;
   diffuseUrl?: string | null;
   normalUrl?: string | null;
+  /** Resolves a texture base name to a loadable URL — used with the skinned mesh's own real
+   * material list (`skinnedMesh.materials` + `faceMaterialIds`) so multi-material actors get
+   * each part's own texture (Wolf = Body + Claws + engine-default; one texture stretched over
+   * all three was visibly wrong vs. Rimy3D). Falls back to `diffuseUrl`/`normalUrl` for
+   * materials without their own texture reference. */
+  resolveTexture?: ((baseName: string) => Promise<string | null>) | null;
   showSkeleton: boolean;
   /** Manual front/back flip for the exceptions the automatic mapping gets backwards (real,
    * confirmed per-actor data inconsistency — see the doc comment below). Off by default.
@@ -128,7 +135,7 @@ export function motionDuration(tracks: BoneMotion[]): number {
   return d;
 }
 
-export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, showSkeleton, mirrorSkeleton, mirrorMesh }: Props) {
+export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, resolveTexture, showSkeleton, mirrorSkeleton, mirrorMesh }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -144,10 +151,15 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     container.appendChild(renderer.domElement);
     const controls = new OrbitControls(camera, renderer.domElement);
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.1));
-    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    // Even, neutral lighting — see the matching comment in Model3DViewer.tsx: a single key
+    // light left the model's far side nearly black, which read as "broken textures".
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.5));
+    const key = new THREE.DirectionalLight(0xffffff, 1.4);
     key.position.set(3, 5, 4);
     scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 1.0);
+    fill.position.set(-4, 2, -3);
+    scene.add(fill);
 
     const bones = nodes.map((n) => {
       const bone = new THREE.Bone();
@@ -169,45 +181,55 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
 
     let meshObject: THREE.Object3D | null = null;
     const textureLoader = new THREE.TextureLoader();
-    const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, metalness: 0.1 });
     // See the matching comment in Model3DViewer.tsx: a failed load used to be silently
     // invisible (map just stays unset, mesh still renders lit/shaded and can look
     // plausibly "textured" at a glance). Log loudly and paint an unmistakable error color
     // instead of leaving a failed load looking like a real successful one.
-    const markTextureFailed = (kind: string, failedUrl: string, error: unknown) => {
+    const markTextureFailed = (target: THREE.MeshStandardMaterial, kind: string, failedUrl: string, error: unknown) => {
       console.error(`[SkeletonAnimationViewer] ${kind} texture failed to load: ${failedUrl}`, error);
-      material.color.set(0xff00ff);
-      material.needsUpdate = true;
+      target.color.set(0xff00ff);
+      target.needsUpdate = true;
     };
-    if (diffuseUrl) {
-      textureLoader.load(
-        diffuseUrl,
-        (tex) => {
-          tex.colorSpace = THREE.SRGBColorSpace;
-          // See the matching comment in Model3DViewer.tsx: the game's real UV data is never
-          // flipped to GL's bottom-left-origin convention, so three.js's default `flipY = true`
-          // doubles up into every texture rendering fully vertically mirrored.
-          tex.flipY = false;
-          material.map = tex;
-          material.needsUpdate = true;
-        },
-        undefined,
-        (err) => markTextureFailed("diffuse", diffuseUrl, err),
-      );
-    }
-    if (normalUrl) {
-      textureLoader.load(
-        normalUrl,
-        (tex) => {
-          tex.flipY = false;
-          unswizzleNormalTexture(tex);
-          material.normalMap = tex;
-          material.needsUpdate = true;
-        },
-        undefined,
-        (err) => markTextureFailed("normal", normalUrl, err),
-      );
-    }
+    // Real game UVs run outside [0,1] (the engine tiles/wraps by default) — see the matching
+    // comment in Model3DViewer.tsx: three.js's clamp-to-edge default smears edge pixels across
+    // every out-of-range face. flipY stays false here: this path's UV data comes raw from the
+    // ._xmac bytes (never flipped to GL's bottom-left-origin convention), so three.js's
+    // default `flipY = true` would double up into a full vertical mirror.
+    const configureWrap = (tex: THREE.Texture) => {
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.flipY = false;
+    };
+    const loadTexturesInto = (target: THREE.MeshStandardMaterial, dUrl: string | null, nUrl: string | null) => {
+      if (dUrl) {
+        textureLoader.load(
+          dUrl,
+          (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace;
+            configureWrap(tex);
+            target.map = tex;
+            target.needsUpdate = true;
+          },
+          undefined,
+          (err) => markTextureFailed(target, "diffuse", dUrl, err),
+        );
+      }
+      if (nUrl) {
+        textureLoader.load(
+          nUrl,
+          (tex) => {
+            configureWrap(tex);
+            unswizzleNormalTexture(tex);
+            target.normalMap = tex;
+            target.needsUpdate = true;
+          },
+          undefined,
+          (err) => markTextureFailed(target, "normal", nUrl, err),
+        );
+      }
+    };
+    const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, metalness: 0.1 });
+    loadTexturesInto(material, diffuseUrl ?? null, normalUrl ?? null);
 
     // CPU skinning (not THREE.SkinnedMesh — see risenlab-animation-research memory: the
     // built-in GPU path rendered visibly mangled geometry even at rest pose, and the bug in it
@@ -268,7 +290,43 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
       geometry.setAttribute("position", new THREE.BufferAttribute(bindPositions.slice(), 3));
       geometry.setAttribute("normal", new THREE.BufferAttribute(bindNormals.slice(), 3));
       geometry.setAttribute("uv", new THREE.BufferAttribute(uvArr, 2));
-      geometry.setIndex(skinnedMesh.faces.flat());
+
+      // Multi-material rendering from the actor's own real material list: faces regrouped
+      // into contiguous per-material runs (`groupFacesByMaterial`), one geometry group + one
+      // material per real material, each loading its own referenced diffuse/normal. Materials
+      // without their own texture reference (e.g. the engine's "EMFX_Default") keep the
+      // fallback pair — the previous whole-mesh behavior.
+      let meshMaterials: THREE.Material | THREE.Material[] = material;
+      const realMaterials = skinnedMesh.materials ?? [];
+      const faceIds = skinnedMesh.faceMaterialIds ?? [];
+      if (resolveTexture && realMaterials.length > 1 && faceIds.length === skinnedMesh.faces.length) {
+        const { index, groups } = groupFacesByMaterial(skinnedMesh.faces, faceIds);
+        geometry.setIndex(index);
+        const materialList: THREE.MeshStandardMaterial[] = [];
+        groups.forEach((group, slot) => {
+          geometry.addGroup(group.start, group.count, slot);
+          const real = realMaterials[group.materialId];
+          const target = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, metalness: 0.1 });
+          materialList.push(target);
+          if (real?.diffuse || real?.normal) {
+            Promise.all([
+              real.diffuse ? resolveTexture(real.diffuse) : Promise.resolve(null),
+              real.normal ? resolveTexture(real.normal) : Promise.resolve(null),
+            ])
+              .then(([dUrl, nUrl]) => {
+                if (disposed) return;
+                if (dUrl || nUrl) loadTexturesInto(target, dUrl, nUrl);
+                else loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null);
+              })
+              .catch(() => loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null));
+          } else {
+            loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null);
+          }
+        });
+        meshMaterials = materialList;
+      } else {
+        geometry.setIndex(skinnedMesh.faces.flat());
+      }
       if (bindNormals.every((v) => v === 0)) geometry.computeVertexNormals();
 
       // Bind-pose inverse world matrix per bone, captured now (right after
@@ -276,7 +334,7 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
       // pose) — this is the one piece of state CPU skinning needs to precompute once.
       const boneBindInverse = bones.map((b) => b.matrixWorld.clone().invert());
 
-      const meshMaterial = new THREE.Mesh(geometry, material);
+      const meshMaterial = new THREE.Mesh(geometry, meshMaterials);
       scene.add(meshMaterial);
       meshObject = meshMaterial;
       skinning = { geometry, bindPositions, bindNormals, boneIndices, boneWeights, boneBindInverse };
@@ -460,7 +518,7 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     // with nodes/tracks (a new actor selection) in this screen's real usage. `mirrorSkeleton`/
     // `mirrorMesh` are rare manual toggles, not worth a live-update path — remounting is
     // simplest and cheap.
-  }, [nodes, tracks, mirrorSkeleton, mirrorMesh]);
+  }, [nodes, tracks, mirrorSkeleton, mirrorMesh, resolveTexture]);
 
   useEffect(() => {
     const container = containerRef.current as (HTMLDivElement & { __setPlaying?: (p: boolean) => void }) | null;

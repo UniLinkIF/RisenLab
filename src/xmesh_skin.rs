@@ -46,6 +46,17 @@ const MESH_SECTION_NORMALS: u32 = 1;
 const MESH_SECTION_TEXCOORDS: u32 = 3;
 const MESH_SECTION_BASEVERTS: u32 = 5;
 
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SkinnedMeshMaterial {
+    pub name: String,
+    /// Diffuse texture file name exactly as stored in the actor's own materials section (no
+    /// extension — the real reader appends one itself, see mimicry's `mi_xmacreader.cpp`).
+    pub diffuse: Option<String>,
+    /// Normal-map texture file name, same convention as `diffuse`.
+    pub normal: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SkinnedMesh {
@@ -60,6 +71,13 @@ pub struct SkinnedMesh {
     /// Per vertex (parallel to `positions`): `(boneNodeIndex, weight)` pairs — indices into the
     /// same skeleton node list `xmac::parse_skeleton` returns. Empty for an unskinned vertex.
     pub skin_weights: Vec<Vec<(u32, f32)>>,
+    /// The actor's own materials, in file order — the index space `face_material_ids` uses.
+    /// Real actors are multi-material (e.g. Wolf = Body + Claws + an engine-default), so
+    /// rendering everything with the first material's texture leaves parts visibly wrong.
+    pub materials: Vec<SkinnedMeshMaterial>,
+    /// Parallel to `faces`: which material (index into `materials`) each triangle uses, read
+    /// from each face-part's own material id.
+    pub face_material_ids: Vec<u32>,
 }
 
 fn read_u32(data: &[u8], off: usize) -> Result<u32> {
@@ -85,6 +103,8 @@ struct RawMesh {
     final_vert_count: usize,
     /// Faces already remapped to FINAL vertex-index space (0..final_vert_count).
     faces_final: Vec<[u32; 3]>,
+    /// Parallel to `faces_final`: each face-part's material id, repeated per face in the part.
+    face_material_ids: Vec<u32>,
 }
 
 /// Parses every mesh section (each may belong to a different node) plus every skin section,
@@ -105,6 +125,7 @@ pub fn parse_skinned_mesh(data: &[u8]) -> Result<SkinnedMesh> {
     let mut raw_meshes: Vec<RawMesh> = Vec::new();
     // (node_index, weights, bone_indices, per-raw-vertex weight count)
     let mut skin_entries: Vec<(usize, Vec<f32>, Vec<u16>, Vec<u32>)> = Vec::new();
+    let mut materials: Vec<SkinnedMeshMaterial> = Vec::new();
 
     let mut next_section = 148usize;
     while next_section < end_section_offset {
@@ -118,7 +139,11 @@ pub fn parse_skinned_mesh(data: &[u8]) -> Result<SkinnedMesh> {
             // uses the stream's actual position afterward as the true next-section boundary.
             // Trusting `declared_size` here (like every other section can) reads garbage for
             // everything after it — this was a real bug caught by a synthetic-vs-real mismatch.
-            next_section = materials_section_end(data, section_start)?;
+            let (end, mats) = parse_materials_section(data, section_start)?;
+            next_section = end;
+            if materials.is_empty() {
+                materials = mats;
+            }
         } else {
             next_section += declared_size;
         }
@@ -131,6 +156,7 @@ pub fn parse_skinned_mesh(data: &[u8]) -> Result<SkinnedMesh> {
     }
 
     let mut out = SkinnedMesh::default();
+    out.materials = materials;
     let mut vert_offset = 0u32;
     // Only the running vertex offset is needed for the skin section below — its own per-vertex
     // index is already in FINAL vertex-index space (see the note above `parse_skin_section`),
@@ -169,6 +195,7 @@ pub fn parse_skinned_mesh(data: &[u8]) -> Result<SkinnedMesh> {
             // above, which is gone.
             out.faces.push([face[0] + vert_offset, face[1] + vert_offset, face[2] + vert_offset]);
         }
+        out.face_material_ids.extend_from_slice(&mesh.face_material_ids);
         node_offsets.insert(mesh.node_index, (vert_offset, mesh.final_vert_count));
         vert_offset += mesh.final_vert_count as u32;
     }
@@ -201,29 +228,52 @@ pub fn parse_skinned_mesh(data: &[u8]) -> Result<SkinnedMesh> {
     Ok(out)
 }
 
-/// Walks a materials section field-by-field (matching the real reader exactly) purely to find
-/// where it really ends — not needed for skinning itself, but every section after this one in
-/// the file is unreadable garbage without it (this section's own declared size can't be trusted).
-fn materials_section_end(data: &[u8], section_start: usize) -> Result<usize> {
+/// Walks a materials section field-by-field (matching the real reader exactly), returning
+/// where it really ends — every section after this one in the file is unreadable garbage
+/// without that (this section's own declared size can't be trusted) — plus the real material
+/// list itself: name and diffuse/normal texture file names per material. Map-type semantics
+/// come straight from mimicry's `mi_xmacreader.cpp`: the map's type byte modulo 8 indexes a
+/// fixed table where 2 = diffuse and 5 = normal (everything else is specular/placeholder).
+fn parse_materials_section(data: &[u8], section_start: usize) -> Result<(usize, Vec<SkinnedMeshMaterial>)> {
+    let read_str = |off: usize, len: usize| -> Result<String> {
+        let bytes = data
+            .get(off..off + len)
+            .ok_or_else(|| anyhow::anyhow!("xmesh: unexpected end of file at offset {off}"))?;
+        Ok(String::from_utf8_lossy(bytes).trim_end_matches('\0').to_string())
+    };
+
     let mut off = section_start + 12; // past {id, size, version}
     let material_count = read_u32(data, off)?;
     off += 4;
     off += 8; // skip
+    let mut materials = Vec::with_capacity(material_count as usize);
     for _ in 0..material_count {
         off += 95; // skip
         let map_count = *data.get(off).ok_or_else(|| anyhow::anyhow!("xmesh: unexpected end of file at offset {off}"))?;
         off += 1;
         let name_len = read_u32(data, off)? as usize;
-        off += 4 + name_len;
+        off += 4;
+        let name = read_str(off, name_len)?;
+        off += name_len;
+        let mut material = SkinnedMeshMaterial { name, diffuse: None, normal: None };
         for _ in 0..map_count {
             off += 26; // skip
-            off += 1; // map type byte
+            let map_type = *data.get(off).ok_or_else(|| anyhow::anyhow!("xmesh: unexpected end of file at offset {off}"))? % 8;
+            off += 1;
             off += 1; // skip
             let path_len = read_u32(data, off)? as usize;
-            off += 4 + path_len;
+            off += 4;
+            let path = read_str(off, path_len)?;
+            off += path_len;
+            match map_type {
+                2 if material.diffuse.is_none() => material.diffuse = Some(path),
+                5 if material.normal.is_none() => material.normal = Some(path),
+                _ => {}
+            }
         }
+        materials.push(material);
     }
-    Ok(off)
+    Ok((off, materials))
 }
 
 fn parse_mesh_section(data: &[u8], section_start: usize) -> Result<RawMesh> {
@@ -286,6 +336,7 @@ fn parse_mesh_section(data: &[u8], section_start: usize) -> Result<RawMesh> {
     // Face parts: each part is {faceCountX3, vertCount, materialId, skipCount} then that many
     // faces (3 raw u32 indices each, offset by the running per-part vertex count).
     let mut faces_raw = Vec::with_capacity(face_count);
+    let mut face_material_ids = Vec::with_capacity(face_count);
     let mut passed_faces = 0usize;
     let mut passed_verts = 0u32;
     while passed_faces != face_count {
@@ -293,7 +344,8 @@ fn parse_mesh_section(data: &[u8], section_start: usize) -> Result<RawMesh> {
         off += 4;
         let part_vert_count = read_u32(data, off)?;
         off += 4;
-        off += 4; // material id (not used here — single-texture rendering for now)
+        let part_material_id = read_u32(data, off)?;
+        off += 4;
         let skip_words = read_u32(data, off)?;
         off += 4;
         for _ in 0..part_face_count {
@@ -301,6 +353,7 @@ fn parse_mesh_section(data: &[u8], section_start: usize) -> Result<RawMesh> {
             let b = read_u32(data, off + 4)? + passed_verts;
             let c = read_u32(data, off + 8)? + passed_verts;
             faces_raw.push([a, b, c]);
+            face_material_ids.push(part_material_id);
             off += 12;
         }
         off += (skip_words as usize) * 4;
@@ -320,6 +373,7 @@ fn parse_mesh_section(data: &[u8], section_start: usize) -> Result<RawMesh> {
         base_verts,
         final_vert_count: vert_count,
         faces_final,
+        face_material_ids,
     })
 }
 
@@ -518,5 +572,94 @@ mod tests {
     #[test]
     fn rejects_too_short_data() {
         assert!(parse_skinned_mesh(b"too short").is_err());
+    }
+
+    /// A materials section shaped exactly like the real reader walks it (95 skip bytes, map
+    /// count, name, then per map: 26 skip + type byte + 1 skip + path), followed by a mesh
+    /// whose two face parts use different material ids — the real Wolf shape (Body + Claws).
+    fn synthetic_xmac_with_materials_and_two_part_mesh() -> Vec<u8> {
+        fn push_material(buf: &mut Vec<u8>, name: &str, maps: &[(u8, &str)]) {
+            buf.extend_from_slice(&[0u8; 95]);
+            buf.push(maps.len() as u8);
+            buf.extend_from_slice(&(name.len() as u32).to_le_bytes());
+            buf.extend_from_slice(name.as_bytes());
+            for (map_type, path) in maps {
+                buf.extend_from_slice(&[0u8; 26]);
+                buf.push(*map_type);
+                buf.push(0);
+                buf.extend_from_slice(&(path.len() as u32).to_le_bytes());
+                buf.extend_from_slice(path.as_bytes());
+            }
+        }
+        let mut materials_body = Vec::new();
+        materials_body.extend_from_slice(&2u32.to_le_bytes()); // material count
+        materials_body.extend_from_slice(&[0u8; 8]);
+        push_material(&mut materials_body, "Wolf_Body", &[(2, "Wolf_Body_Diffuse_S1"), (5, "Wolf_Body_Normal_S1")]);
+        push_material(&mut materials_body, "Wolf_Claws", &[(2, "Wolf_Claws_Diffuse_S1")]);
+
+        let positions: [[f32; 3]; 6] = [[0.0; 3]; 6];
+        let mut mesh_body = Vec::new();
+        mesh_body.extend_from_slice(&0u32.to_le_bytes()); // node_index
+        mesh_body.extend_from_slice(&6u32.to_le_bytes()); // vert_count (final)
+        mesh_body.extend_from_slice(&6u32.to_le_bytes()); // uvert_count (raw)
+        mesh_body.extend_from_slice(&(2u32 * 3).to_le_bytes()); // face_count * 3
+        mesh_body.extend_from_slice(&[0u8; 4]);
+        mesh_body.extend_from_slice(&1u32.to_le_bytes()); // mesh_section_count (vertices only)
+        mesh_body.extend_from_slice(&[0u8; 4]);
+        mesh_body.extend_from_slice(&MESH_SECTION_VERTICES.to_le_bytes());
+        mesh_body.extend_from_slice(&12u32.to_le_bytes());
+        mesh_body.extend_from_slice(&[0u8; 4]);
+        for p in positions {
+            for c in p {
+                mesh_body.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        // Two face parts, one triangle each, materials 0 and 1.
+        for material_id in [0u32, 1] {
+            mesh_body.extend_from_slice(&3u32.to_le_bytes()); // face_count * 3
+            mesh_body.extend_from_slice(&3u32.to_le_bytes()); // part vert count
+            mesh_body.extend_from_slice(&material_id.to_le_bytes());
+            mesh_body.extend_from_slice(&0u32.to_le_bytes()); // skip words
+            for i in [0u32, 1, 2] {
+                mesh_body.extend_from_slice(&i.to_le_bytes());
+            }
+        }
+
+        let mut sections = Vec::new();
+        push_section(&mut sections, SECTION_MATERIALS, &materials_body);
+        push_section(&mut sections, SECTION_MESH, &mesh_body);
+
+        let mut header = vec![0u8; 148];
+        header[140..143].copy_from_slice(b"XAC");
+        header[146] = 0;
+        let end_section_offset = 148 + sections.len();
+        header[136..140].copy_from_slice(&((end_section_offset - 140) as u32).to_le_bytes());
+
+        let mut buf = header;
+        buf.extend_from_slice(&sections);
+        buf
+    }
+
+    #[test]
+    fn parses_materials_and_per_face_material_ids() {
+        let data = synthetic_xmac_with_materials_and_two_part_mesh();
+        let mesh = parse_skinned_mesh(&data).unwrap();
+        assert_eq!(
+            mesh.materials,
+            vec![
+                SkinnedMeshMaterial {
+                    name: "Wolf_Body".into(),
+                    diffuse: Some("Wolf_Body_Diffuse_S1".into()),
+                    normal: Some("Wolf_Body_Normal_S1".into()),
+                },
+                SkinnedMeshMaterial { name: "Wolf_Claws".into(), diffuse: Some("Wolf_Claws_Diffuse_S1".into()), normal: None },
+            ]
+        );
+        assert_eq!(mesh.faces.len(), 2);
+        assert_eq!(mesh.face_material_ids, vec![0, 1]);
+        // The declared size in the section header is the body length, which for materials the
+        // parser must NOT trust — reaching the mesh section at all proves the field-by-field
+        // walk landed on the true boundary.
+        assert_eq!(mesh.positions.len(), 6);
     }
 }

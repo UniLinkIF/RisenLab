@@ -55,6 +55,14 @@ export interface BoneMotion {
  * parsed directly from `._xmac` bytes (`xmesh_skin::parse_skinned_mesh` on the Rust side).
  * Unlike the `.obj` export (`actorObjUrl`), this carries real skin data so the surface can
  * actually deform with the skeleton instead of just showing a static bind pose. */
+/** One material from an actor's own materials section: its name plus the real diffuse/normal
+ * texture file names it references (no extension — the game stores them that way). */
+export interface SkinnedMeshMaterial {
+  name: string;
+  diffuse: string | null;
+  normal: string | null;
+}
+
 export interface SkinnedMeshData {
   positions: [number, number, number][];
   normals: [number, number, number][];
@@ -63,6 +71,11 @@ export interface SkinnedMeshData {
   /** Parallel to `positions`: up to a few `[boneNodeIndex, weight]` pairs each — indices into
    * the same skeleton node list `actorSkeleton` returns. Empty array = unskinned vertex. */
   skinWeights: [number, number][][];
+  /** The actor's real materials, in file order — the index space `faceMaterialIds` uses. */
+  materials: SkinnedMeshMaterial[];
+  /** Parallel to `faces`: which material each triangle uses. Real actors are multi-material
+   * (Wolf = Body + Claws + engine-default), so one texture for the whole mesh is wrong. */
+  faceMaterialIds: number[];
 }
 
 /** Real texture file names a mesh/actor's own material(s) reference, straight from the game's

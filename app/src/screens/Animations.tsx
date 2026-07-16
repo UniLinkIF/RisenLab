@@ -1,8 +1,9 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import type { ActorEntry, BoneMotion, LibraryEntry, MotionEntry, SkeletonNode, SkinnedMeshData } from "../lib/types";
 import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, listActors, listLibrary, listMotions, motionTracks, readTextureDataUrl } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
+import { findTextureEntryForBaseName } from "../lib/materials";
 import { getActorOrientation, setActorOrientation } from "../lib/actorOrientation";
 import FolderTree from "../components/FolderTree";
 import Model3DViewer, { type ViewMode } from "../components/Model3DViewer";
@@ -130,6 +131,16 @@ export default function Animations({ lang }: Props) {
     [actors, actorTreeKey, actorQuery],
   );
   const visibleMotions = useMemo(() => filterEntries(motions, motionQuery), [motions, motionQuery]);
+
+  // Per-material texture resolution for multi-material actors (see the matching prop doc in
+  // SkeletonAnimationViewer) — same library lookup the auto-match above uses.
+  const resolveTexture = useCallback(
+    async (baseName: string) => {
+      const entry = findTextureEntryForBaseName(textures, baseName);
+      return entry ? readTextureDataUrl(entry.pngRel) : null;
+    },
+    [textures],
+  );
 
   useEffect(() => {
     if (!selectedActor) {
@@ -411,6 +422,7 @@ export default function Animations({ lang }: Props) {
               objUrl={objUrl}
               diffuseUrl={diffuseUrl}
               normalUrl={normalUrl}
+              resolveTexture={resolveTexture}
             />
           ) : skeletonError ? (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--red)" }}>
@@ -425,7 +437,14 @@ export default function Animations({ lang }: Props) {
               {lang === "uk" ? "Конвертація актора…" : "Converting actor…"}
             </div>
           ) : (
-            <Model3DViewer key={selectedActor.entryPath} objUrl={objUrl} diffuseUrl={diffuseUrl} normalUrl={normalUrl} mode={mode} />
+            <Model3DViewer
+              key={selectedActor.entryPath}
+              objUrl={objUrl}
+              diffuseUrl={diffuseUrl}
+              normalUrl={normalUrl}
+              mode={mode}
+              resolveTexture={resolveTexture}
+            />
           )}
         </div>
 

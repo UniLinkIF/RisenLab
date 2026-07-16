@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
+import { deriveNormalName } from "../lib/materials";
 import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
 
 /** Genome's normal maps are DXT5-compressed with the X/Y components swizzled into the green
@@ -34,6 +35,14 @@ interface Props {
   diffuseUrl: string | null;
   normalUrl: string | null;
   mode: ViewMode;
+  /** Resolves a texture base name (a material's `usemtl` name — which in this game's real
+   * data IS its diffuse texture's base name) to a loadable URL. When present, multi-material
+   * meshes get each submesh's own real texture instead of the first material's texture
+   * stretched over everything (real bug: the Titan weapons pair two texture atlases; with a
+   * single material the sword-misc parts rendered with the axes atlas — "incomplete" textures
+   * confirmed against Rimy3D, which reads the full .mtl). Null/absent = single-material
+   * behavior (also used to honor an explicit user texture override). */
+  resolveTexture?: ((baseName: string) => Promise<string | null>) | null;
 }
 
 /** Frames the camera so the whole model fits the view, regardless of its native scale
@@ -55,7 +64,7 @@ function frameObject(object: THREE.Object3D, camera: THREE.PerspectiveCamera, co
   controls.update();
 }
 
-export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: Props) {
+export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, resolveTexture }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -86,94 +95,140 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = false;
 
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x223344, 1.1));
-    const key = new THREE.DirectionalLight(0xffffff, 1.6);
+    // Even, neutral lighting: this viewer's job is judging textures (like Rimy3D's flat-lit
+    // view), not dramatic presentation. The previous single key + BLUE rim left the far side
+    // of every model nearly black with a navy tint — the owner read that as "broken/black
+    // textures" when the texture data was actually fine.
+    scene.add(new THREE.HemisphereLight(0xffffff, 0x445566, 1.5));
+    const key = new THREE.DirectionalLight(0xffffff, 1.4);
     key.position.set(3, 5, 4);
     scene.add(key);
-    const rim = new THREE.DirectionalLight(0x6699ff, 0.6);
-    rim.position.set(-4, 2, -3);
-    scene.add(rim);
+    const fill = new THREE.DirectionalLight(0xffffff, 1.0);
+    fill.position.set(-4, 2, -3);
+    scene.add(fill);
 
     let disposed = false;
     let currentObject: THREE.Object3D | null = null;
     const textureLoader = new THREE.TextureLoader();
 
-    function applyMaterial(object: THREE.Object3D) {
+    function newMaterial(): THREE.MeshStandardMaterial {
       // Four honest, distinct render modes (no fabricated data): the real diffuse+normal
       // shading, a wireframe of the real topology, an untextured "clay" pass for judging
       // silhouette/shape, and a direct view of the normal/relief map itself (the "green
       // file" the owner asked about) as the surface color, to inspect it on its own.
-      const material = new THREE.MeshStandardMaterial({
+      return new THREE.MeshStandardMaterial({
         color: mode === "clay" ? 0x9099a6 : 0xffffff,
         wireframe: mode === "wireframe",
         roughness: 0.75,
         metalness: 0.1,
       });
-      // A failed texture load used to be silently invisible: `material.map` just stayed
-      // unset and the mesh rendered as a plain lit metallic-ish shape — real (from a normal
-      // map applying while diffuse failed) shading detail made it look plausibly "textured"
-      // at a glance even though it wasn't (confirmed: owner caught this live, a "detailed"
-      // looking axe had zero real network requests for its texture — a stale/failed load
-      // masquerading as success). Every load now has a real onError that (a) logs loudly with
-      // the failing URL so this is diagnosable instead of guessed at, and (b) paints the
-      // material an unmistakable error color instead of leaving it looking like a real,
-      // successfully-shaded metal/clay surface.
-      const markTextureFailed = (kind: string, failedUrl: string, error: unknown) => {
-        console.error(`[Model3DViewer] ${kind} texture failed to load: ${failedUrl}`, error);
-        material.color.set(0xff00ff);
-        material.needsUpdate = true;
-        requestRender();
-      };
-      if (mode === "textured" && diffuseUrl) {
+    }
+
+    // A failed texture load used to be silently invisible: `material.map` just stayed
+    // unset and the mesh rendered as a plain lit metallic-ish shape — real (from a normal
+    // map applying while diffuse failed) shading detail made it look plausibly "textured"
+    // at a glance even though it wasn't (confirmed: owner caught this live, a "detailed"
+    // looking axe had zero real network requests for its texture — a stale/failed load
+    // masquerading as success). Every load now has a real onError that (a) logs loudly with
+    // the failing URL so this is diagnosable instead of guessed at, and (b) paints the
+    // material an unmistakable error color instead of leaving it looking like a real,
+    // successfully-shaded metal/clay surface.
+    function markTextureFailed(material: THREE.MeshStandardMaterial, kind: string, failedUrl: string, error: unknown) {
+      console.error(`[Model3DViewer] ${kind} texture failed to load: ${failedUrl}`, error);
+      material.color.set(0xff00ff);
+      material.needsUpdate = true;
+      requestRender();
+    }
+
+    // Real game UVs routinely run outside [0,1] (e.g. It_Wpn_Axe_Titan: every one of its 1285
+    // UVs has a NEGATIVE V — the D3D-era engine tiles/wraps textures by default). three.js's
+    // TextureLoader defaults to ClampToEdgeWrapping, which smears the texture's edge pixels
+    // across every out-of-range face — that rendered whole weapon blades as flat grey even
+    // though the UVs and the texture were both correct.
+    // flipY stays true: these meshes come from a real, verified-correct .obj (Risenaut's own
+    // xmsh->obj export, opened correctly in Rimy3D by the owner), whose UVs follow the
+    // standard OBJ bottom-left-origin convention (confirmed live A/B against Rimy3D's render
+    // of the same real .obj/.png — the apple).
+    function configureWrap(tex: THREE.Texture) {
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.wrapT = THREE.RepeatWrapping;
+      tex.flipY = true;
+    }
+
+    function loadTexturesInto(material: THREE.MeshStandardMaterial, dUrl: string | null, nUrl: string | null) {
+      if (mode === "textured" && dUrl) {
         textureLoader.load(
-          diffuseUrl,
+          dUrl,
           (tex) => {
             tex.colorSpace = THREE.SRGBColorSpace;
-            // These meshes now come from a real, verified-correct .obj (Risenaut's own
-            // xmsh->obj export, opened successfully in Rimy3D by the owner) rather than an
-            // unflipped mimicry-helper export — its UVs follow the standard OBJ (bottom-left
-            // origin) convention, so three.js's default `flipY = true` is the correct match
-            // (confirmed live A/B against Rimy3D's own render of the same real .obj/.mtl/.png).
-            tex.flipY = true;
+            configureWrap(tex);
             material.map = tex;
             material.needsUpdate = true;
             requestRender();
           },
           undefined,
-          (err) => markTextureFailed("diffuse", diffuseUrl, err),
+          (err) => markTextureFailed(material, "diffuse", dUrl, err),
         );
       }
-      if (mode === "textured" && normalUrl) {
+      if (mode === "textured" && nUrl) {
         textureLoader.load(
-          normalUrl,
+          nUrl,
           (tex) => {
-            tex.flipY = true;
+            configureWrap(tex);
             unswizzleNormalTexture(tex);
             material.normalMap = tex;
             material.needsUpdate = true;
             requestRender();
           },
           undefined,
-          (err) => markTextureFailed("normal", normalUrl, err),
+          (err) => markTextureFailed(material, "normal", nUrl, err),
         );
       }
-      if (mode === "normalMap" && normalUrl) {
+      if (mode === "normalMap" && nUrl) {
         textureLoader.load(
-          normalUrl,
+          nUrl,
           (tex) => {
-            tex.flipY = true;
+            configureWrap(tex);
             material.map = tex;
             material.needsUpdate = true;
             requestRender();
           },
           undefined,
-          (err) => markTextureFailed("normalMap-preview", normalUrl, err),
+          (err) => markTextureFailed(material, "normalMap-preview", nUrl, err),
         );
       }
+    }
+
+    function applyMaterial(object: THREE.Object3D) {
+      const fallback = newMaterial();
+      loadTexturesInto(fallback, diffuseUrl, normalUrl);
+      // OBJLoader creates one child mesh per `usemtl` group, with the material name preserved
+      // on its placeholder material — that name is this game's real per-submesh texture key
+      // (see the `resolveTexture` prop doc). One shared material per distinct name, resolved
+      // once; anything unresolvable keeps the fallback (the side panel's auto-matched pair).
+      const byName = new Map<string, THREE.MeshStandardMaterial>();
       object.traverse((child) => {
-        if (child instanceof THREE.Mesh) {
-          child.material = material;
+        if (!(child instanceof THREE.Mesh)) return;
+        const materialName = !Array.isArray(child.material) && child.material ? child.material.name : "";
+        if (mode !== "textured" || !resolveTexture || !materialName) {
+          child.material = fallback;
+          return;
         }
+        let material = byName.get(materialName);
+        if (!material) {
+          material = newMaterial();
+          byName.set(materialName, material);
+          const target = material;
+          const normalName = deriveNormalName(materialName);
+          Promise.all([resolveTexture(materialName), normalName ? resolveTexture(normalName) : Promise.resolve(null)])
+            .then(([dUrl, nUrl]) => {
+              if (disposed) return;
+              if (dUrl || nUrl) loadTexturesInto(target, dUrl, nUrl ?? normalUrl);
+              else loadTexturesInto(target, diffuseUrl, normalUrl);
+            })
+            .catch(() => loadTexturesInto(target, diffuseUrl, normalUrl));
+        }
+        child.material = material;
       });
     }
 
@@ -258,7 +313,7 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
       if (currentObject) scene.remove(currentObject);
       container.removeChild(renderer.domElement);
     };
-  }, [objUrl, diffuseUrl, normalUrl, mode]);
+  }, [objUrl, diffuseUrl, normalUrl, mode, resolveTexture]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }
