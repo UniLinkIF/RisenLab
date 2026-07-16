@@ -362,7 +362,8 @@ export function risenlabDevApi(): Plugin {
             const archivePath = url.searchParams.get("archivePath")!;
             const entryPath = url.searchParams.get("entryPath")!;
             const boneNamesJson = url.searchParams.get("boneNames")!;
-            const { stdout } = await runCli(["motion-tracks", archivePath, entryPath, boneNamesJson]);
+            const smooth = url.searchParams.get("smooth") ?? "0";
+            const { stdout } = await runCli(["motion-tracks", archivePath, entryPath, boneNamesJson, smooth]);
             return sendJson(res, 200, JSON.parse(stdout));
           }
           if (url.pathname === "/api/actor-skinned-mesh" && req.method === "GET") {

@@ -76,6 +76,10 @@ export default function Animations({ lang }: Props) {
   const [enhancedRels, setEnhancedRels] = useState<Set<string>>(new Set());
   const [motionTracksData, setMotionTracksData] = useState<BoneMotion[] | null>(null);
   const [tracksLoading, setTracksLoading] = useState(false);
+  // Jitter-cleanup preview strength (0 = original clip; the filtering itself runs in Rust —
+  // `xmot::smooth_tracks`, the same code `smooth-motion` writes real files with — so what
+  // this previews is exactly what an export would contain).
+  const [smoothStrength, setSmoothStrength] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [mirrorSkeleton, setMirrorSkeleton] = useState(false);
@@ -293,6 +297,7 @@ export default function Animations({ lang }: Props) {
       selectedMotion.archivePath,
       selectedMotion.entryPath,
       skeletonNodes.map((n) => n.name),
+      smoothStrength,
     )
       .then((tracks) => {
         if (!cancelled) setMotionTracksData(tracks);
@@ -306,7 +311,7 @@ export default function Animations({ lang }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [selectedMotion, skeletonNodes]);
+  }, [selectedMotion, skeletonNodes, smoothStrength]);
 
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -417,25 +422,37 @@ export default function Animations({ lang }: Props) {
                   } bones animated (skeleton only, not yet skinned to the mesh surface)`}
             </span>
             <div style={{ flex: 1 }} />
-            <button
-              disabled
-              style={{
-                padding: "6px 12px",
-                borderRadius: 14,
-                background: "var(--bg2)",
-                border: "1px dashed var(--border)",
-                font: "600 11px system-ui",
-                color: "var(--text-faint)",
-                cursor: "not-allowed",
-              }}
+            <span
               title={
                 lang === "uk"
-                  ? "У розробці (див. docs/AI.md): 1) згладжування/подвоєння кадрів (30→60fps), 2) очищення дрижання суглобів, 3) ретаргет сучасного мокапу. Потрібен запис .xmot — наступний етап після читання."
-                  : "In development (see docs/AI.md): 1) smoothing/frame doubling (30→60fps), 2) joint-jitter cleanup, 3) modern mocap retargeting. Requires .xmot writing — the step after reading."
+                  ? "Реальний фільтр очищення дрижання суглобів (rust: smooth_tracks) — те саме, що запишеться у .xmot при експорті. Далі за планом (docs/AI.md): подвоєння кадрів 30→60fps і ретаргет мокапу."
+                  : "Real joint-jitter cleanup filter (rust: smooth_tracks) — exactly what a .xmot export would contain. Next per docs/AI.md: 30→60fps frame doubling and mocap retargeting."
               }
+              style={{ color: "var(--text-faint)", font: "600 11px system-ui" }}
             >
-              {lang === "uk" ? "🎬 Покращити анімацію (ШІ) — скоро" : "🎬 Enhance animation (AI) — soon"}
-            </button>
+              {lang === "uk" ? "🎬 Дрижання:" : "🎬 Jitter:"}
+            </span>
+            {([
+              [0, lang === "uk" ? "ориг." : "orig"],
+              [0.35, lang === "uk" ? "м'яко" : "soft"],
+              [0.6, lang === "uk" ? "сильно" : "strong"],
+            ] as [number, string][]).map(([value, label]) => (
+              <button
+                key={value}
+                onClick={() => setSmoothStrength(value)}
+                disabled={tracksLoading}
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 12,
+                  background: smoothStrength === value ? "var(--accent)" : "var(--bg2)",
+                  border: `1px solid ${smoothStrength === value ? "var(--accent)" : "var(--border)"}`,
+                  font: "600 11px system-ui",
+                  color: smoothStrength === value ? "#fff" : "var(--text-dim)",
+                }}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         ) : (
           <div

@@ -145,11 +145,16 @@ export async function actorSkeleton(archivePath: string, entryPath: string): Pro
   });
 }
 
-export async function motionTracks(archivePath: string, entryPath: string, boneNames: string[]): Promise<BoneMotion[]> {
-  if (isTauri()) return invoke<BoneMotion[]>("motion_tracks", { archivePath, entryPath, boneNames });
+export async function motionTracks(
+  archivePath: string,
+  entryPath: string,
+  boneNames: string[],
+  smooth = 0,
+): Promise<BoneMotion[]> {
+  if (isTauri()) return invoke<BoneMotion[]>("motion_tracks", { archivePath, entryPath, boneNames, smooth });
   const boneNamesJson = encodeURIComponent(JSON.stringify(boneNames));
   return api<BoneMotion[]>(
-    `motion-tracks?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}&boneNames=${boneNamesJson}`,
+    `motion-tracks?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}&boneNames=${boneNamesJson}&smooth=${smooth}`,
   );
 }
 

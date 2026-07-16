@@ -262,8 +262,14 @@ fn motion_tracks(
     archive_path: String,
     entry_path: String,
     bone_names: Vec<String>,
+    smooth: Option<f32>,
 ) -> Result<Vec<risenlab::xmot::BoneMotion>, String> {
-    batch::motion_tracks(&PathBuf::from(archive_path), &entry_path, &bone_names).map_err(|e| e.to_string())
+    batch::motion_tracks(&PathBuf::from(archive_path), &entry_path, &bone_names)
+        .map(|tracks| match smooth {
+            Some(s) if s > 0.0 => risenlab::xmot::smooth_tracks(&tracks, s),
+            _ => tracks,
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]

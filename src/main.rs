@@ -129,10 +129,14 @@ enum Commands {
     ActorSkeleton { archive: PathBuf, entry_path: String },
     /// Prints one motion clip's real per-bone keyframe tracks as JSON, for each bone name in
     /// `bone_names_json` (a JSON array of strings — typically every name from `actor-skeleton`).
+    /// `smooth` > 0 applies the jitter-cleanup filter (`xmot::smooth_tracks`) before printing —
+    /// the viewer's before/after preview path.
     MotionTracks {
         archive: PathBuf,
         entry_path: String,
         bone_names_json: String,
+        #[arg(default_value_t = 0.0)]
+        smooth: f32,
     },
     /// Prints one actor's real skinned mesh (positions/normals/UVs/faces/per-vertex bone
     /// weights) as JSON, parsed directly from the `._xmac` bytes — no `mimicry-helper.exe`
@@ -392,9 +396,11 @@ fn main() -> anyhow::Result<()> {
             archive,
             entry_path,
             bone_names_json,
+            smooth,
         } => {
             let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
             let tracks = batch::motion_tracks(&archive, &entry_path, &bone_names)?;
+            let tracks = if smooth > 0.0 { risenlab::xmot::smooth_tracks(&tracks, smooth) } else { tracks };
             println!("{}", serde_json::to_string(&tracks)?);
         }
         Commands::ActorSkinnedMesh { archive, entry_path } => {
