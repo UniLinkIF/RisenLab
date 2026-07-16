@@ -153,12 +153,17 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     if (diffuseUrl) {
       textureLoader.load(diffuseUrl, (tex) => {
         tex.colorSpace = THREE.SRGBColorSpace;
+        // See the matching comment in Model3DViewer.tsx: the game's real UV data is never
+        // flipped to GL's bottom-left-origin convention, so three.js's default `flipY = true`
+        // doubles up into every texture rendering fully vertically mirrored.
+        tex.flipY = false;
         material.map = tex;
         material.needsUpdate = true;
       });
     }
     if (normalUrl) {
       textureLoader.load(normalUrl, (tex) => {
+        tex.flipY = false;
         material.normalMap = tex;
         material.needsUpdate = true;
       });

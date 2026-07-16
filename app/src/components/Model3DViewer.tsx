@@ -89,6 +89,16 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
       if (mode === "textured" && diffuseUrl) {
         textureLoader.load(diffuseUrl, (tex) => {
           tex.colorSpace = THREE.SRGBColorSpace;
+          // Real UV data comes straight from the game's own mesh bytes (Piranha Bytes'
+          // Genome engine, a D3D-era engine using a top-left-origin V convention) via
+          // mimicry-helper's OBJ writer — it is not re-flipped to match OpenGL/WebGL's
+          // bottom-left convention on the way out. three.js's TextureLoader defaults
+          // `flipY = true` to match that GL convention, which — combined with UVs that were
+          // never flipped to begin with — doubles up into a full vertical mirror of every
+          // texture on every model (confirmed live: a texture atlas region meant for the hips
+          // ended up rendering on the head). Disable it so the real, unflipped UVs are used
+          // as-is, matching what the game engine itself actually samples.
+          tex.flipY = false;
           material.map = tex;
           material.needsUpdate = true;
           requestRender();
@@ -96,6 +106,7 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
       }
       if (mode === "textured" && normalUrl) {
         textureLoader.load(normalUrl, (tex) => {
+          tex.flipY = false;
           material.normalMap = tex;
           material.needsUpdate = true;
           requestRender();
@@ -103,6 +114,7 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
       }
       if (mode === "normalMap" && normalUrl) {
         textureLoader.load(normalUrl, (tex) => {
+          tex.flipY = false;
           material.map = tex;
           material.needsUpdate = true;
           requestRender();

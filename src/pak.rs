@@ -7,7 +7,7 @@
 //! Layout: [header][file data][directory tree]. All integers little-endian.
 
 use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 use flate2::read::ZlibDecoder;
@@ -83,7 +83,7 @@ enum Node {
 
 pub struct PakArchive {
     pub header: PakHeader,
-    file: File,
+    file: BufReader<File>,
     root: Node,
 }
 
@@ -172,7 +172,15 @@ fn flatten_node(node: &Node, out: &mut Vec<FileEntry>) {
 
 impl PakArchive {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
-        let mut file = File::open(path)?;
+        // Buffered: the directory tree is parsed as many (~10-15) small sequential reads per
+        // entry (name, three u64 timestamps, several u32s) — on an unbuffered `File` each one
+        // is its own syscall. A real archive can have tens of thousands of entries (e.g. the
+        // speech_*.pak voice-line archives), so this was tens of thousands of syscalls just to
+        // list an archive's contents, dominating real measured time (`list-meshes` took ~8s
+        // against the real game despite doing no format decoding at all). `read_file`'s later
+        // seeks-then-bulk-reads of full entry payloads are unaffected — a `BufReader` forwards
+        // reads larger than its internal buffer straight to the underlying file.
+        let mut file = BufReader::new(File::open(path)?);
 
         // Manually parse header so we can compute data_offset/root_offset/volume_size (u64 fields).
         let version = read_u32(&mut file)?;

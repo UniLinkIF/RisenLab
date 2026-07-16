@@ -19,19 +19,26 @@ interface Props {
  * character token out of the actor name to pre-filter the motion list — a starting point the
  * user can always broaden by editing the search box themselves, not a guaranteed match.
  *
- * Only real "Ani_"-prefixed character actors get a guess. The other two real prefixes —
- * "It_" (weapon/item props, e.g. "It_Wpn_Crossbow_War") and "Object_" (animated interactables,
- * e.g. "Object_Interact_Animated_Cupboard") — have no dedicated body skeleton animation of
- * their own (they're rigid props driven by the wielder/scene), so their first token is
- * meaningless as a filter and, worse, is often short enough (e.g. "It") to substring-match
- * huge swaths of unrelated real clips (confirmed against real game data: "It" matched 4865
- * motions across Titan/Ogre/Lizard/Goblin). Guessing nothing (empty query = browse everything)
- * beats guessing wrong. */
+ * Three real actor-name prefixes, three different guessing rules:
+ * - "Ani_" (real characters, e.g. "Ani_Wolf_Monster_Wolf") — the FIRST real token ("Wolf")
+ *   names the creature, matching that creature's own real folder/clip-name convention.
+ * - "Object_" (animated interactables, e.g. "Object_Interact_Animated_Button") — these have no
+ *   skeleton animation of their own; what the player sees is really a HERO animation of using
+ *   the object, named after the object's own distinguishing word, not the object's file name
+ *   (confirmed on real data: "Object_Interact_Animated_Button" ↔
+ *   "Hero_Stand_None_None_P0_Button_PushIn..."). The LAST token in the file name is that
+ *   distinguishing word for every real one of these (Winch/Waterpipe/GrindStone/Cupboard/...).
+ * - "It_" (weapon/item props, e.g. "It_Wpn_Crossbow_War") — no dedicated animation of their own
+ *   at all (rigid props driven by the wielder), and their first token is short enough (e.g.
+ *   "It") to substring-match huge swaths of unrelated real clips (confirmed on real data: "It"
+ *   matched 4865 motions across Titan/Ogre/Lizard/Goblin). Guessing nothing (empty query =
+ *   browse everything) beats guessing wrong here. */
 function guessMotionQuery(actorName: string): string {
-  if (!actorName.startsWith("Ani_")) return "";
   const stem = actorName.replace(/\._xmac$/i, "");
-  const tokens = stem.split("_").filter((t) => t && t !== "Ani");
-  return tokens[0] ?? "";
+  const tokens = stem.split("_").filter(Boolean);
+  if (actorName.startsWith("Ani_")) return tokens.filter((t) => t !== "Ani")[0] ?? "";
+  if (actorName.startsWith("Object_")) return tokens[tokens.length - 1] ?? "";
+  return "";
 }
 
 export default function Animations({ lang }: Props) {

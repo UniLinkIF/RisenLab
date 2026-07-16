@@ -90,7 +90,7 @@ pub fn extract_all(exe_or_shortcut: &Path, out_dir: &Path) -> Result<usize> {
     let archives = gamepath::discover_archives(&root)?;
 
     fs::create_dir_all(out_dir)?;
-    let mut manifest = fs::File::create(out_dir.join(MANIFEST_NAME))?;
+    let mut manifest = std::io::BufWriter::new(fs::File::create(out_dir.join(MANIFEST_NAME))?);
 
     let mut count = 0usize;
     for archive_info in &archives {
@@ -141,9 +141,15 @@ pub fn extract_all(exe_or_shortcut: &Path, out_dir: &Path) -> Result<usize> {
             }
             let img = image::RgbaImage::from_raw(decoded.width, decoded.height, decoded.rgba)
                 .ok_or_else(|| anyhow!("decoded RGBA size mismatch for {}", entry.path))?;
-            img.save(&png_full).with_context(|| format!("writing {}", png_full.display()))?;
+            // Encode to an in-memory buffer once, then both write it and hash it from the same
+            // bytes — this used to be `img.save()` followed by `fs::read()` of what was just
+            // written, a full extra disk round trip per texture (1342 of them on a real
+            // extraction run) purely to get bytes already available in memory.
+            let mut png_bytes = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
+                .with_context(|| format!("encoding {}", entry.path))?;
+            fs::write(&png_full, &png_bytes).with_context(|| format!("writing {}", png_full.display()))?;
 
-            let png_bytes = fs::read(&png_full)?;
             let png_rel_str = png_rel.to_string_lossy().replace('\\', "/");
             write_manifest_line(
                 &mut manifest,
@@ -158,6 +164,7 @@ pub fn extract_all(exe_or_shortcut: &Path, out_dir: &Path) -> Result<usize> {
             count += 1;
         }
     }
+    manifest.flush()?;
     Ok(count)
 }
 
