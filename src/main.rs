@@ -141,13 +141,18 @@ enum Commands {
     /// Prints a texture's real width/height/pixel-format/file-size (read from its source
     /// archive entry) as JSON, for the review UI's detail panel.
     TextureMeta { archive: PathBuf, entry_path: String },
-    /// Lanczos-upscales an already-extracted PNG by `scale`x into `<out_dir>/edited/`,
-    /// ready for review/`apply-textures` — today's real "AI regenerate" capability.
+    /// Regenerates an already-extracted PNG by `scale`x into `<out_dir>/edited/`, ready for
+    /// review/`apply-textures`. With an AI key configured (settings.json `aiApiKey` or env
+    /// `RISENLAB_AI_KEY`) photo-like textures go through the real AI enhancer (Replicate);
+    /// otherwise (and always for normal/specular data maps) a local Lanczos upscale.
     Regenerate {
         out_dir: PathBuf,
         png_rel: String,
         #[arg(default_value_t = 2)]
         scale: u32,
+        /// auto | lanczos | ai
+        #[arg(default_value = "auto")]
+        engine: String,
     },
 }
 
@@ -388,8 +393,8 @@ fn main() -> anyhow::Result<()> {
             let meta = batch::texture_meta(&archive, &entry_path)?;
             println!("{}", serde_json::to_string(&meta)?);
         }
-        Commands::Regenerate { out_dir, png_rel, scale } => {
-            let dest = batch::regenerate(&out_dir, &png_rel, scale)?;
+        Commands::Regenerate { out_dir, png_rel, scale, engine } => {
+            let dest = batch::regenerate(&out_dir, &png_rel, scale, engine.parse()?)?;
             println!("Wrote {}", dest.display());
         }
     }

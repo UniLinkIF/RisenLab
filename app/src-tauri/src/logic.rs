@@ -21,6 +21,14 @@ pub struct AppSettings {
     pub patch_dir: String,
     pub review_html: String,
     pub language: String,
+    /// Replicate API token for real AI texture enhancement (see `risenlab::ai`). `None` /
+    /// empty = feature dormant, local Lanczos is used. `#[serde(default)]` keeps old
+    /// settings.json files (without these keys) loading.
+    #[serde(default)]
+    pub ai_api_key: Option<String>,
+    /// Replicate model override (`owner/name`); default is `risenlab::ai::DEFAULT_MODEL`.
+    #[serde(default)]
+    pub ai_model: Option<String>,
 }
 
 /// Reads `USERPROFILE` (Windows home dir); falls back to `.` if unset, which only happens
@@ -42,6 +50,8 @@ pub fn default_settings_for(home: &Path) -> AppSettings {
         patch_dir: desktop.join("RisenLab-Patch").to_string_lossy().into_owned(),
         review_html: desktop.join("RisenLab-Review.html").to_string_lossy().into_owned(),
         language: "uk".to_string(),
+        ai_api_key: None,
+        ai_model: None,
     }
 }
 

@@ -9,7 +9,14 @@ clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 ddsfile = { version = "0.6.0", default-features = false }
 texpresso = { version = "2.0.2", default-features = false }
-image = { version = "0.25.10", default-features = false, features = ["png"] }
+# jpeg/webp: AI providers may return the enhanced image in either format — the pipeline
+# itself stays PNG (decoded + re-saved). NOTE deliberately NO Rust HTTP/TLS dependency for
+# the AI layer: rustls needs a C compiler (`ring`), and native-tls/schannel pulls a
+# windows-sys build that needs binutils (`dlltool`+`as`) — neither exists in the dev
+# sandbox. `src/ai.rs` shells out to Windows' own bundled `curl.exe` instead (present since
+# Windows 10 1803), the same subprocess pattern already used for `mimicry-helper.exe`.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp"] }
+base64 = "0.22"
 windows-sys = { version = "0.61.2", features = ["Win32_Globalization"] }
 eframe = "0.35.0"
 rfd = "0.17.2"

@@ -26,6 +26,10 @@ function defaultSettings() {
     patchDir: path.join(PROJECT_ROOT, "patches"),
     reviewHtml: path.join(PROJECT_ROOT, "review.html"),
     language: "uk",
+    // Real AI texture enhancement (Replicate) — the Rust CLI reads these straight from
+    // settings.json; empty key = feature dormant, local Lanczos fallback.
+    aiApiKey: null as string | null,
+    aiModel: null as string | null,
   };
 }
 const SETTINGS_PATH = path.join(PROJECT_ROOT, "settings.json");

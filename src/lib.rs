@@ -1,3 +1,4 @@
+pub mod ai;
 pub mod batch;
 pub mod content;
 pub mod dds;

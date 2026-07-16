@@ -71,12 +71,13 @@
 
 ## Next
 
-- [ ] Replace the Lanczos placeholder in the pipeline with a real AI upscaler as an external process —
-      the splice/patch mechanics around it already work, this is meant to be a drop-in swap. First attempt
-      (auto-downloading a pretrained EDSR model via `super_image`/HuggingFace) was correctly blocked by
-      the session's security policy — autonomously fetching+running third-party model weights needs
-      explicit user sign-off on the specific model/source, not an agent decision. Needs that decision, or
-      to happen on the user's own machine under their control.
+- [x] Replace the Lanczos placeholder in the pipeline with a real AI upscaler — DONE 2026-07-17 as a
+      cloud API rather than local model weights (owner's call: "щоб я потім тільки вклав api"). See
+      `docs/AI.md` and `src/ai.rs`: Replicate (default `nightmareai/real-esrgan`, any img2img model
+      opt-in with per-category prompts), key in the app's own settings.json, graceful Lanczos fallback
+      when unconfigured/erroring, normal/specular maps always local. HTTP via Windows' bundled
+      `curl.exe` (no Rust TLS dep builds in this sandbox — rustls needs a C compiler, schannel needs
+      binutils). Verified end-to-end up to the auth boundary with a dummy token.
 - [ ] Empirically confirm `.pXX` override/priority rule against the real game, and visually confirm the
       inverted-color test patch actually shows up in-game — now technically unblocked (Windows + real
       Risen install both present, test patch already built), but copying the patch into the real game's

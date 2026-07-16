@@ -170,6 +170,64 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
 
         <div style={{ background: "var(--bg1)", border: "1px solid var(--border)", borderRadius: 14, padding: 20 }}>
           <div style={{ font: "600 11px system-ui", letterSpacing: ".04em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 12 }}>
+            {lang === "uk" ? "ШІ — покращення текстур" : "AI — texture enhancement"}
+          </div>
+          <div style={{ font: "500 12px system-ui", color: "var(--text-faint)", marginBottom: 12, lineHeight: 1.5 }}>
+            {lang === "uk"
+              ? "Встав API-ключ Replicate (replicate.com → Account → API tokens) — і кнопки «Покращити текстури» почнуть використовувати справжній ШІ замість локального збільшення. Без ключа все працює як зараз (Lanczos). Normal-мапи ШІ не чіпає ніколи — вони лишаються на локальному шляху."
+              : "Paste a Replicate API token (replicate.com → Account → API tokens) and the “Enhance textures” buttons switch to real AI instead of the local upscale. Without a key everything keeps working as today (Lanczos). Normal maps never go through AI — they stay on the local path."}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <div style={{ width: 130, flexShrink: 0, font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
+              {lang === "uk" ? "API-ключ" : "API key"}
+            </div>
+            <input
+              type="password"
+              value={settings.aiApiKey ?? ""}
+              placeholder="r8_…"
+              autoComplete="off"
+              onChange={(e) => persist({ ...settings, aiApiKey: e.target.value.trim() || null })}
+              style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
+            />
+            <div
+              style={{
+                width: 9,
+                height: 9,
+                borderRadius: "50%",
+                flexShrink: 0,
+                background: settings.aiApiKey ? "var(--green)" : "var(--border)",
+              }}
+              title={
+                settings.aiApiKey
+                  ? lang === "uk"
+                    ? "ШІ активний"
+                    : "AI active"
+                  : lang === "uk"
+                    ? "Без ключа — локальне покращення"
+                    : "No key — local enhancement"
+              }
+            />
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 130, flexShrink: 0, font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
+              {lang === "uk" ? "Модель" : "Model"}
+            </div>
+            <input
+              value={settings.aiModel ?? ""}
+              placeholder="nightmareai/real-esrgan"
+              onChange={(e) => persist({ ...settings, aiModel: e.target.value.trim() || null })}
+              style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
+            />
+          </div>
+          <div style={{ font: "500 11px system-ui", color: "var(--text-faint)", marginTop: 8, lineHeight: 1.5 }}>
+            {lang === "uk"
+              ? "Порожньо = точне збільшення (real-esrgan, без промпту). Можна вказати будь-яку img2img-модель Replicate (owner/name) — тоді застосуються промпти за категорією текстури (шкіра/метал/камінь/тканина…)."
+              : "Empty = faithful upscale (real-esrgan, no prompt). Any Replicate img2img model (owner/name) switches to category prompts (skin/metal/stone/cloth…)."}
+          </div>
+        </div>
+
+        <div style={{ background: "var(--bg1)", border: "1px solid var(--border)", borderRadius: 14, padding: 20 }}>
+          <div style={{ font: "600 11px system-ui", letterSpacing: ".04em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 12 }}>
             {s.appSection}
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0" }}>

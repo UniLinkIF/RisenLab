@@ -782,14 +782,74 @@ pub fn embed_real_texture_paths(obj_path: &Path, library_out_dir: &Path) -> Resu
     Ok(added)
 }
 
-/// Upscales an already-extracted PNG via Lanczos3 resize and writes the result into an
-/// `edited/` sibling directory, ready for review/`apply`. This is today's real "AI
-/// regenerate" capability — the same placeholder pipeline proven end-to-end on the real
-/// game (see `docs/ROADMAP.md`'s "Full texture pipeline round trip" entry), generalized from
-/// a one-off proof into a reusable function. A real ML upscaler is a separate, not-yet-
-/// approved decision (see `docs/ROADMAP.md`'s "Next" section) — this is not it.
-pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32) -> Result<PathBuf> {
+/// Which enhancement engine `regenerate` uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RegenEngine {
+    /// Real AI (Replicate) when an API key is configured AND the texture is photo-like;
+    /// silently falls back to Lanczos otherwise — the "paste a key and it upgrades itself"
+    /// behavior the UI relies on.
+    #[default]
+    Auto,
+    /// Local Lanczos3 upscale only (today's baseline; also the only correct choice for
+    /// normal/specular data maps regardless of configuration).
+    Lanczos,
+    /// Force the AI path; errors out loudly when no key is configured or the call fails.
+    Ai,
+}
+
+impl std::str::FromStr for RegenEngine {
+    type Err = anyhow::Error;
+    fn from_str(s: &str) -> Result<Self> {
+        match s.to_lowercase().as_str() {
+            "auto" => Ok(Self::Auto),
+            "lanczos" => Ok(Self::Lanczos),
+            "ai" => Ok(Self::Ai),
+            other => anyhow::bail!("unknown engine '{other}' (expected auto|lanczos|ai)"),
+        }
+    }
+}
+
+/// Regenerates an already-extracted PNG into the `edited/` sibling directory, ready for
+/// review/`apply`. Engine selection (see `RegenEngine`): with a configured API key
+/// (settings.json `aiApiKey` / env `RISENLAB_AI_KEY`) photo-like textures go through the
+/// real AI enhancer (`ai::enhance_png`); normal/specular data maps and unconfigured installs
+/// use the local Lanczos3 upscale that was this function's original behavior.
+pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32, engine: RegenEngine) -> Result<PathBuf> {
     let src = out_dir.join(png_rel);
+    let dest = out_dir.join("edited").join(png_rel);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let want_ai = match engine {
+        RegenEngine::Lanczos => false,
+        // AI models are trained on photos; normal/specular maps encode vectors, not colors —
+        // they must stay on the faithful local path even when forced (see `ai::is_data_map`).
+        RegenEngine::Ai | RegenEngine::Auto => !crate::ai::is_data_map(png_rel),
+    };
+    if want_ai {
+        match crate::ai::load_config() {
+            Some(cfg) => match crate::ai::enhance_png(&cfg, &src, png_rel, scale) {
+                Ok(bytes) => {
+                    // Provider may answer in png/jpeg/webp — the pipeline stays PNG.
+                    let img = image::load_from_memory(&bytes).context("decoding AI-enhanced image")?;
+                    img.save(&dest).with_context(|| format!("writing {}", dest.display()))?;
+                    return Ok(dest);
+                }
+                Err(e) if engine == RegenEngine::Ai => return Err(e),
+                Err(e) => {
+                    eprintln!("AI enhancement failed for {png_rel} ({e:#}); falling back to Lanczos");
+                }
+            },
+            None if engine == RegenEngine::Ai => {
+                anyhow::bail!(
+                    "AI engine requested but no API key is configured (settings.json aiApiKey or RISENLAB_AI_KEY)"
+                )
+            }
+            None => {}
+        }
+    }
+
     let img = image::ImageReader::open(&src)
         .with_context(|| format!("opening {}", src.display()))?
         .decode()?
@@ -802,11 +862,6 @@ pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32) -> Result<PathBuf> 
         height * scale,
         image::imageops::FilterType::Lanczos3,
     );
-
-    let dest = out_dir.join("edited").join(png_rel);
-    if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
-    }
     resized
         .save(&dest)
         .with_context(|| format!("writing {}", dest.display()))?;
@@ -1332,7 +1387,7 @@ mod tests {
         let img = image::RgbaImage::from_pixel(8, 4, image::Rgba([10, 20, 30, 255]));
         img.save(&src).unwrap();
 
-        let dest = regenerate(&out_dir, png_rel, 2).unwrap();
+        let dest = regenerate(&out_dir, png_rel, 2, RegenEngine::Lanczos).unwrap();
         assert_eq!(dest, out_dir.join("edited").join(png_rel));
         let decoded = image::ImageReader::open(&dest).unwrap().decode().unwrap();
         assert_eq!(decoded.width(), 16);
@@ -1350,7 +1405,7 @@ mod tests {
             .save(&src)
             .unwrap();
 
-        let dest = regenerate(&out_dir, png_rel, 0).unwrap();
+        let dest = regenerate(&out_dir, png_rel, 0, RegenEngine::Lanczos).unwrap();
         let decoded = image::ImageReader::open(&dest).unwrap().decode().unwrap();
         assert_eq!((decoded.width(), decoded.height()), (5, 5));
 
@@ -1360,7 +1415,7 @@ mod tests {
     #[test]
     fn regenerate_errors_when_source_png_is_missing() {
         let out_dir = temp_dir("regenerate_missing");
-        assert!(regenerate(&out_dir, "nope.png", 2).is_err());
+        assert!(regenerate(&out_dir, "nope.png", 2, RegenEngine::Lanczos).is_err());
         fs::remove_dir_all(&out_dir).ok();
     }
 

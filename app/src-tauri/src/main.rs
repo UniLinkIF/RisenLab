@@ -274,7 +274,7 @@ fn actor_skinned_mesh(archive_path: String, entry_path: String) -> Result<risenl
 #[tauri::command(rename_all = "camelCase")]
 fn regenerate_texture(state: State<AppState>, png_rel: String, scale: Option<u32>) -> Result<(), String> {
     let out_dir = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
-    batch::regenerate(&out_dir, &png_rel, scale.unwrap_or(2))
+    batch::regenerate(&out_dir, &png_rel, scale.unwrap_or(2), risenlab::batch::RegenEngine::Auto)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }

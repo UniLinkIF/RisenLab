@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import type { ActorEntry, BoneMotion, LibraryEntry, MotionEntry, SkeletonNode, SkinnedMeshData } from "../lib/types";
-import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, listActors, listLibrary, listMotions, motionTracks, readTextureDataUrl } from "../lib/api";
+import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import { getActorOrientation, setActorOrientation } from "../lib/actorOrientation";
@@ -65,6 +65,15 @@ export default function Animations({ lang }: Props) {
   const [skeletonNodes, setSkeletonNodes] = useState<SkeletonNode[]>([]);
   const [skeletonError, setSkeletonError] = useState<string | null>(null);
   const [skinnedMeshData, setSkinnedMeshData] = useState<SkinnedMeshData | null>(null);
+
+  // Texture-enhancement state (the actor-side counterpart of Models.tsx's "Regenerate"):
+  // `enhancedRels` = pngRels that got a fresh `edited/` variant this session (only those are
+  // safe to read back — readEditedDataUrl on a texture that was never regenerated 404s, which
+  // the viewers would render as a loud magenta error), `showEnhanced` = which variant the
+  // per-material resolver serves.
+  const [enhancing, setEnhancing] = useState(false);
+  const [showEnhanced, setShowEnhanced] = useState(false);
+  const [enhancedRels, setEnhancedRels] = useState<Set<string>>(new Set());
   const [motionTracksData, setMotionTracksData] = useState<BoneMotion[] | null>(null);
   const [tracksLoading, setTracksLoading] = useState(false);
   const [playing, setPlaying] = useState(true);
@@ -133,14 +142,56 @@ export default function Animations({ lang }: Props) {
   const visibleMotions = useMemo(() => filterEntries(motions, motionQuery), [motions, motionQuery]);
 
   // Per-material texture resolution for multi-material actors (see the matching prop doc in
-  // SkeletonAnimationViewer) — same library lookup the auto-match above uses.
+  // SkeletonAnimationViewer) — same library lookup the auto-match above uses. When the user
+  // enhanced this actor's textures and toggled the preview, serve the `edited/` variant for
+  // exactly the textures that really have one (see `enhancedRels` above).
   const resolveTexture = useCallback(
     async (baseName: string) => {
       const entry = findTextureEntryForBaseName(textures, baseName);
-      return entry ? readTextureDataUrl(entry.pngRel) : null;
+      if (!entry) return null;
+      if (showEnhanced && enhancedRels.has(entry.pngRel)) return readEditedDataUrl(entry.pngRel);
+      return readTextureDataUrl(entry.pngRel);
     },
-    [textures],
+    [textures, showEnhanced, enhancedRels],
   );
+
+  // Every distinct diffuse texture the selected actor's own materials reference — the real
+  // list "Покращити текстури" works through (e.g. SwampMummy = Eyes + Body + Head diffuse).
+  const actorDiffuseEntries = useMemo(() => {
+    const mats = skinnedMeshData?.materials ?? [];
+    const seen = new Set<string>();
+    const entries: LibraryEntry[] = [];
+    for (const m of mats) {
+      if (!m.diffuse) continue;
+      const entry = findTextureEntryForBaseName(textures, m.diffuse);
+      if (entry && !seen.has(entry.pngRel)) {
+        seen.add(entry.pngRel);
+        entries.push(entry);
+      }
+    }
+    return entries;
+  }, [skinnedMeshData, textures]);
+
+  async function handleEnhanceTextures() {
+    if (actorDiffuseEntries.length === 0) return;
+    setEnhancing(true);
+    setError(null);
+    try {
+      const done = new Set(enhancedRels);
+      // Sequential on purpose: each regenerate call shells out to the CLI on the dev-server
+      // side; parallel calls on a 2-4 texture actor save little and interleave error states.
+      for (const entry of actorDiffuseEntries) {
+        await regenerateTexture(entry.pngRel);
+        done.add(entry.pngRel);
+      }
+      setEnhancedRels(done);
+      setShowEnhanced(true);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setEnhancing(false);
+    }
+  }
 
   useEffect(() => {
     if (!selectedActor) {
@@ -153,6 +204,10 @@ export default function Animations({ lang }: Props) {
     setObjLoading(true);
     setSelectedMotion(null);
     setMotionTracksData(null);
+    // Enhancement preview is per-actor: a new selection starts back at the originals (the
+    // edited/ files themselves persist on disk — only the toggle resets).
+    setShowEnhanced(false);
+    setEnhancedRels(new Set());
     // Per-actor, not "one method for everyone" — see lib/actorOrientation.ts for why this
     // isn't a from-scratch geometric guess (one was tried and failed validation).
     const orientation = getActorOrientation(selectedActor.archivePath, selectedActor.entryPath);
@@ -361,6 +416,26 @@ export default function Animations({ lang }: Props) {
                     motionTracksData.filter((t) => t.positionKeys.length > 0 || t.rotationKeys.length > 0).length
                   } bones animated (skeleton only, not yet skinned to the mesh surface)`}
             </span>
+            <div style={{ flex: 1 }} />
+            <button
+              disabled
+              style={{
+                padding: "6px 12px",
+                borderRadius: 14,
+                background: "var(--bg2)",
+                border: "1px dashed var(--border)",
+                font: "600 11px system-ui",
+                color: "var(--text-faint)",
+                cursor: "not-allowed",
+              }}
+              title={
+                lang === "uk"
+                  ? "У розробці (див. docs/AI.md): 1) згладжування/подвоєння кадрів (30→60fps), 2) очищення дрижання суглобів, 3) ретаргет сучасного мокапу. Потрібен запис .xmot — наступний етап після читання."
+                  : "In development (see docs/AI.md): 1) smoothing/frame doubling (30→60fps), 2) joint-jitter cleanup, 3) modern mocap retargeting. Requires .xmot writing — the step after reading."
+              }
+            >
+              {lang === "uk" ? "🎬 Покращити анімацію (ШІ) — скоро" : "🎬 Enhance animation (AI) — soon"}
+            </button>
           </div>
         ) : (
           <div
@@ -382,7 +457,7 @@ export default function Animations({ lang }: Props) {
                 : "Select an animation below to see real skeleton playback."}
           </div>
         )}
-        <div style={{ display: "flex", gap: 8, padding: "12px 20px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", gap: 8, padding: "12px 20px", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
           {(["textured", "wireframe", "clay", "normalMap"] as ViewMode[]).map((m) => (
             <button
               key={m}
@@ -399,6 +474,58 @@ export default function Animations({ lang }: Props) {
               {m}
             </button>
           ))}
+          <div style={{ flex: 1 }} />
+          {selectedActor && actorDiffuseEntries.length > 0 ? (
+            <>
+              {enhancedRels.size > 0 ? (
+                <button
+                  onClick={() => setShowEnhanced((v) => !v)}
+                  style={{
+                    padding: "7px 14px",
+                    borderRadius: 16,
+                    background: showEnhanced ? "var(--accent)" : "var(--bg2)",
+                    border: `1px solid ${showEnhanced ? "var(--accent)" : "var(--border)"}`,
+                    font: "600 11.5px system-ui",
+                    color: showEnhanced ? "#fff" : "var(--text-dim)",
+                  }}
+                >
+                  {showEnhanced
+                    ? lang === "uk"
+                      ? "Показано: покращені"
+                      : "Showing: enhanced"
+                    : lang === "uk"
+                      ? "Показано: оригінал"
+                      : "Showing: original"}
+                </button>
+              ) : null}
+              <button
+                onClick={handleEnhanceTextures}
+                disabled={enhancing}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: 16,
+                  background: enhancing ? "var(--bg2)" : "var(--accent)",
+                  border: "1px solid var(--accent)",
+                  font: "600 11.5px system-ui",
+                  color: enhancing ? "var(--text-dim)" : "#fff",
+                  cursor: enhancing ? "wait" : "pointer",
+                }}
+                title={
+                  lang === "uk"
+                    ? `Покращити всі текстури цієї моделі (${actorDiffuseEntries.length} шт.)`
+                    : `Enhance all of this model's textures (${actorDiffuseEntries.length})`
+                }
+              >
+                {enhancing
+                  ? lang === "uk"
+                    ? "Покращення…"
+                    : "Enhancing…"
+                  : lang === "uk"
+                    ? `✨ Покращити текстури (${actorDiffuseEntries.length})`
+                    : `✨ Enhance textures (${actorDiffuseEntries.length})`}
+              </button>
+            </>
+          ) : null}
         </div>
         <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
           {!selectedActor ? (
