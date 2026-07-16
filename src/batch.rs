@@ -518,6 +518,30 @@ pub fn motion_tracks(archive_path: &Path, entry_path: &str, bone_names: &[String
     xmot::parse_motion(&data, bone_names)
 }
 
+/// Real, local motion cleanup end-to-end: reads one clip from its archive, low-pass-filters
+/// every animated bone's tracks (`xmot::smooth_tracks`), patches the key values back IN PLACE
+/// (`xmot::patch_motion_keys` — same counts/sizes, so the whole file structure incl. every
+/// not-yet-decoded wrapper field survives byte-for-byte) and writes the result to `out_path`.
+/// `strength` 0.0..1.0; at 0.0 the output is verifiably byte-identical to the original entry —
+/// the built-in correctness check for the whole read→locate→write chain.
+pub fn smooth_motion_to_file(
+    archive_path: &Path,
+    entry_path: &str,
+    bone_names: &[String],
+    strength: f32,
+    out_path: &Path,
+) -> Result<()> {
+    let data = read_raw_entry_bytes(archive_path, entry_path)?;
+    let tracks = xmot::parse_motion(&data, bone_names)?;
+    let smoothed = xmot::smooth_tracks(&tracks, strength);
+    let patched = xmot::patch_motion_keys(&data, &smoothed)?;
+    if let Some(parent) = out_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(out_path, patched).with_context(|| format!("writing {}", out_path.display()))?;
+    Ok(())
+}
+
 /// A real actor's skinned mesh (positions/normals/UVs/faces/per-vertex bone weights), parsed
 /// directly from the `._xmac` bytes in Rust (`xmesh_skin::parse_skinned_mesh`) — the data
 /// `mesh_to_obj_from_archive`'s OBJ export can't carry (OBJ has no per-vertex bone weights),

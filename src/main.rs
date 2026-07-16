@@ -141,6 +141,18 @@ enum Commands {
     /// Prints a texture's real width/height/pixel-format/file-size (read from its source
     /// archive entry) as JSON, for the review UI's detail panel.
     TextureMeta { archive: PathBuf, entry_path: String },
+    /// Reads one motion clip, low-pass-filters every bone's keyframe tracks ("прибрати
+    /// дрижання" — see docs/AI.md), patches the values back IN PLACE (file structure preserved
+    /// byte-for-byte) and writes the result. `strength` 0 = byte-identical copy (the built-in
+    /// round-trip check for the write chain), 0.3–0.6 = visible cleanup.
+    SmoothMotion {
+        archive: PathBuf,
+        entry_path: String,
+        /// JSON array of bone names (typically all names from `actor-skeleton`).
+        bone_names_json: String,
+        strength: f32,
+        out_path: PathBuf,
+    },
     /// Regenerates an already-extracted PNG by `scale`x into `<out_dir>/edited/`, ready for
     /// review/`apply-textures`. With an AI key configured (settings.json `aiApiKey` or env
     /// `RISENLAB_AI_KEY`) photo-like textures go through the real AI enhancer (Replicate);
@@ -388,6 +400,17 @@ fn main() -> anyhow::Result<()> {
         Commands::ActorSkinnedMesh { archive, entry_path } => {
             let mesh = batch::actor_skinned_mesh(&archive, &entry_path)?;
             println!("{}", serde_json::to_string(&mesh)?);
+        }
+        Commands::SmoothMotion {
+            archive,
+            entry_path,
+            bone_names_json,
+            strength,
+            out_path,
+        } => {
+            let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
+            batch::smooth_motion_to_file(&archive, &entry_path, &bone_names, strength, &out_path)?;
+            println!("Wrote {}", out_path.display());
         }
         Commands::TextureMeta { archive, entry_path } => {
             let meta = batch::texture_meta(&archive, &entry_path)?;

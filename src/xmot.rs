@@ -251,6 +251,155 @@ pub fn parse_motion(data: &[u8], bone_names: &[String]) -> Result<Vec<BoneMotion
     Ok(out)
 }
 
+/// Byte locations of one bone's keyframe channels inside a raw `._xmot` file — the write-side
+/// counterpart of `parse_motion`, for patching key VALUES in place. Only records whose header
+/// counts are readable are located (same rule as the parse side's preferred path); in-place
+/// patching never changes counts/sizes, so the file structure — including every not-yet-decoded
+/// wrapper/chunk field — is preserved byte-for-byte.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordLocation {
+    pub bone_name: String,
+    /// Absolute byte offset of the first position key; `num_pos` 16-byte keys follow.
+    pub pos_off: usize,
+    pub num_pos: u32,
+    /// Absolute byte offset of the first rotation key; `num_rot` 20-byte keys follow.
+    pub rot_off: usize,
+    pub num_rot: u32,
+}
+
+/// Locates the patchable keyframe channels for every requested bone (bones without a readable
+/// counts-header are skipped — they can't be patched safely).
+pub fn locate_records(data: &[u8], bone_names: &[String]) -> Result<Vec<RecordLocation>> {
+    let Some(xsm_off) = data.windows(4).position(|w| w == b"XSM ") else {
+        bail!("xmot: not a recognized legacy motion clip (no 'XSM ' magic found)");
+    };
+    let payload_start = xsm_off + 8;
+    let mut out = Vec::new();
+    for bone_name in bone_names {
+        let Some(name_off) = find_length_prefixed_name(data, bone_name, payload_start) else { continue };
+        let Some([num_pos, num_rot, _num_scale, _num_scale_rot]) = read_header_key_counts(data, name_off) else {
+            continue;
+        };
+        let pos_off = name_off + 4 + bone_name.len();
+        let rot_off = pos_off + num_pos as usize * 16;
+        // Bounds check the full extent so a truncated file can't cause a partial patch.
+        if rot_off + num_rot as usize * 20 > data.len() {
+            bail!("xmot: record for '{bone_name}' extends past end of file");
+        }
+        out.push(RecordLocation { bone_name: bone_name.clone(), pos_off, num_pos, rot_off, num_rot });
+    }
+    Ok(out)
+}
+
+/// Returns a copy of the raw `._xmot` with the given bones' keyframe VALUES replaced in place.
+/// Each supplied `BoneMotion`'s key counts must exactly match the file's (same clip, values
+/// edited — e.g. by `smooth_tracks`); anything else is an error, since growing/shrinking a
+/// record would require rewriting chunk sizes whose semantics aren't fully decoded. Times are
+/// written too (same count ⇒ same byte layout), so retiming within a fixed key count also works.
+pub fn patch_motion_keys(data: &[u8], edits: &[BoneMotion]) -> Result<Vec<u8>> {
+    let names: Vec<String> = edits.iter().map(|e| e.bone_name.clone()).collect();
+    let locations = locate_records(data, &names)?;
+    let mut out = data.to_vec();
+    for edit in edits {
+        let Some(loc) = locations.iter().find(|l| l.bone_name == edit.bone_name) else {
+            // A bone the clip doesn't animate (or whose header is unreadable) with an empty
+            // edit is a no-op; with real keys it's a caller bug worth failing loudly on.
+            if edit.position_keys.is_empty() && edit.rotation_keys.is_empty() {
+                continue;
+            }
+            bail!("xmot: bone '{}' not found/patchable in this clip", edit.bone_name);
+        };
+        if edit.position_keys.len() != loc.num_pos as usize {
+            bail!(
+                "xmot: '{}' position key count {} != file's {} (in-place patch can't resize)",
+                edit.bone_name,
+                edit.position_keys.len(),
+                loc.num_pos
+            );
+        }
+        if edit.rotation_keys.len() != loc.num_rot as usize {
+            bail!(
+                "xmot: '{}' rotation key count {} != file's {} (in-place patch can't resize)",
+                edit.bone_name,
+                edit.rotation_keys.len(),
+                loc.num_rot
+            );
+        }
+        for (i, key) in edit.position_keys.iter().enumerate() {
+            let off = loc.pos_off + i * 16;
+            for (j, v) in key.iter().enumerate() {
+                out[off + j * 4..off + j * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        for (i, key) in edit.rotation_keys.iter().enumerate() {
+            let off = loc.rot_off + i * 20;
+            for (j, v) in key.iter().enumerate() {
+                out[off + j * 4..off + j * 4 + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Real, local (no external AI) motion cleanup: a gentle low-pass filter over each bone's
+/// keyframe tracks — the "згладжування дрижання" direction from `docs/AI.md`. Each interior
+/// key is blended toward the midpoint of its neighbors by `strength` (0.0 = untouched,
+/// 1.0 = fully averaged); first/last keys are kept exactly so loop boundaries stay seamless.
+/// Quaternions are hemisphere-aligned before blending (q and -q are the same rotation — naive
+/// averaging across the double-cover boundary would swing through a huge wrong arc) and
+/// re-normalized after.
+pub fn smooth_tracks(tracks: &[BoneMotion], strength: f32) -> Vec<BoneMotion> {
+    let s = strength.clamp(0.0, 1.0);
+    if s == 0.0 {
+        // Bit-exact no-op — even renormalizing an untouched quaternion would flip low bits
+        // (real files store not-perfectly-unit floats), breaking the byte-identical
+        // round-trip guarantee the write chain is verified with.
+        return tracks.to_vec();
+    }
+    tracks
+        .iter()
+        .map(|t| {
+            let mut out = t.clone();
+            for i in 1..t.position_keys.len().saturating_sub(1) {
+                let (prev, cur, next) = (t.position_keys[i - 1], t.position_keys[i], t.position_keys[i + 1]);
+                for c in 0..3 {
+                    let mid = (prev[c] + next[c]) * 0.5;
+                    out.position_keys[i][c] = cur[c] + (mid - cur[c]) * s;
+                }
+                // time (index 3) untouched
+            }
+            for i in 1..t.rotation_keys.len().saturating_sub(1) {
+                let cur = t.rotation_keys[i];
+                let mut prev = t.rotation_keys[i - 1];
+                let mut next = t.rotation_keys[i + 1];
+                let align = |q: &mut [f32; 5], reference: &[f32; 5]| {
+                    let dot: f32 = q[..4].iter().zip(&reference[..4]).map(|(a, b)| a * b).sum();
+                    if dot < 0.0 {
+                        for v in q[..4].iter_mut() {
+                            *v = -*v;
+                        }
+                    }
+                };
+                align(&mut prev, &cur);
+                align(&mut next, &cur);
+                let mut blended = [0.0f32; 4];
+                for c in 0..4 {
+                    let mid = (prev[c] + next[c]) * 0.5;
+                    blended[c] = cur[c] + (mid - cur[c]) * s;
+                }
+                let norm = blended.iter().map(|v| v * v).sum::<f32>().sqrt();
+                if norm > 1e-6 {
+                    for c in 0..4 {
+                        out.rotation_keys[i][c] = blended[c] / norm;
+                    }
+                }
+                // time (index 4) untouched
+            }
+            out
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,6 +527,104 @@ mod tests {
         assert!(result[0].rotation_keys.is_empty(), "scale-rotation keys must not become the rotation track");
         assert!(result[0].position_keys.is_empty());
         assert!(result[0].scale_keys.is_empty());
+    }
+
+    /// Builds a counts-header record file with one bone: 2 position keys + 3 rotation keys.
+    fn synthetic_xmot_with_header(name: &str) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"XSM ");
+        buf.extend_from_slice(&[1, 1, 0, 0]);
+        push_header_with_counts(&mut buf, 2, 3, 0, 0);
+        push_name(&mut buf, name);
+        push_pos_key(&mut buf, 1.0, 2.0, 3.0, 0.0);
+        push_pos_key(&mut buf, 1.5, 2.5, 3.5, 0.04);
+        push_rot_key(&mut buf, 0.0, 0.0, 0.0, 1.0, 0.0);
+        push_rot_key(&mut buf, 0.1, 0.0, 0.0, 0.99499, 0.04);
+        push_rot_key(&mut buf, 0.0, 0.0, 0.0, 1.0, 0.08);
+        buf
+    }
+
+    #[test]
+    fn patching_with_identical_values_is_byte_identical() {
+        let data = synthetic_xmot_with_header("Bone_ROOT");
+        let parsed = parse_motion(&data, &["Bone_ROOT".to_string()]).unwrap();
+        let patched = patch_motion_keys(&data, &parsed).unwrap();
+        assert_eq!(patched, data, "round trip must reproduce the file byte-for-byte");
+    }
+
+    #[test]
+    fn patched_values_read_back_and_rest_of_file_is_untouched() {
+        let data = synthetic_xmot_with_header("Bone_ROOT");
+        let mut edit = parse_motion(&data, &["Bone_ROOT".to_string()]).unwrap();
+        edit[0].position_keys[1] = [9.0, 8.0, 7.0, 0.04];
+        edit[0].rotation_keys[1] = [0.2, 0.0, 0.0, 0.9798, 0.04];
+        let patched = patch_motion_keys(&data, &edit).unwrap();
+        assert_eq!(patched.len(), data.len());
+        let reparsed = parse_motion(&patched, &["Bone_ROOT".to_string()]).unwrap();
+        assert_eq!(reparsed[0].position_keys[1], [9.0, 8.0, 7.0, 0.04]);
+        assert_eq!(reparsed[0].rotation_keys[1], [0.2, 0.0, 0.0, 0.9798, 0.04]);
+        // everything before the first position key (header + name) is untouched
+        let keys_start = patched.len() - (2 * 16 + 3 * 20);
+        assert_eq!(&patched[..keys_start], &data[..keys_start]);
+    }
+
+    #[test]
+    fn patching_with_wrong_key_count_is_rejected() {
+        let data = synthetic_xmot_with_header("Bone_ROOT");
+        let mut edit = parse_motion(&data, &["Bone_ROOT".to_string()]).unwrap();
+        edit[0].rotation_keys.pop();
+        assert!(patch_motion_keys(&data, &edit).is_err());
+    }
+
+    #[test]
+    fn smoothing_attenuates_a_spike_and_keeps_endpoints_and_times() {
+        let track = BoneMotion {
+            bone_name: "Bone_Spine".into(),
+            position_keys: vec![
+                [0.0, 0.0, 0.0, 0.0],
+                [10.0, 0.0, 0.0, 0.04], // spike
+                [0.0, 0.0, 0.0, 0.08],
+            ],
+            rotation_keys: vec![
+                [0.0, 0.0, 0.0, 1.0, 0.0],
+                [0.5, 0.0, 0.0, 0.8660, 0.04], // 60° jerk between identity neighbors
+                [0.0, 0.0, 0.0, 1.0, 0.08],
+            ],
+            scale_keys: vec![],
+        };
+        let smoothed = &smooth_tracks(&[track.clone()], 0.5)[0];
+        assert_eq!(smoothed.position_keys[0], track.position_keys[0]);
+        assert_eq!(smoothed.position_keys[2], track.position_keys[2]);
+        assert!((smoothed.position_keys[1][0] - 5.0).abs() < 1e-5, "spike halves at strength 0.5");
+        assert_eq!(smoothed.position_keys[1][3], 0.04, "time untouched");
+        let q = &smoothed.rotation_keys[1];
+        assert!(q[0] < 0.5, "rotation jerk attenuated: x was 0.5, now {}", q[0]);
+        let norm: f32 = q[..4].iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-4, "stays a unit quaternion");
+        assert_eq!(q[4], 0.04, "time untouched");
+    }
+
+    #[test]
+    fn smoothing_at_zero_strength_changes_nothing_and_handles_negated_quats() {
+        let track = BoneMotion {
+            bone_name: "B".into(),
+            position_keys: vec![],
+            rotation_keys: vec![
+                [0.0, 0.0, 0.0, 1.0, 0.0],
+                [0.01, 0.0, 0.0, 0.99995, 0.04],
+                // same rotation as identity but sign-negated (double cover) — naive averaging
+                // would swing wildly; hemisphere alignment must keep this stable
+                [-0.0, -0.0, -0.0, -1.0, 0.08],
+            ],
+            scale_keys: vec![],
+        };
+        let zero = &smooth_tracks(&[track.clone()], 0.0)[0];
+        assert_eq!(zero.rotation_keys, track.rotation_keys);
+        let smoothed = &smooth_tracks(&[track], 1.0)[0];
+        let q = &smoothed.rotation_keys[1];
+        // midpoint of identity and (negated) identity is identity — x goes toward 0
+        assert!(q[0].abs() < 0.01, "hemisphere-aligned midpoint stays near identity, got x={}", q[0]);
+        assert!(q[3].abs() > 0.999);
     }
 
     #[test]
