@@ -1,1 +1,6 @@
 /target
+/demo_assets
+app/node_modules
+app/dist
+app/tsconfig.tsbuildinfo
+app/src-tauri/target

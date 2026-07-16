@@ -28,7 +28,7 @@ fn helper_exe_path() -> PathBuf {
     if relative.exists() {
         return relative;
     }
-    PathBuf::from(r"C:\Users\rusak\OneDrive\Desktop\Claude\mimicry-helper\mimicry-helper.exe")
+    PathBuf::from(r"C:\Users\rusak\Desktop\Claude\mimicry-helper\mimicry-helper.exe")
 }
 
 fn run_helper(args: &[&str]) -> Result<()> {
@@ -52,6 +52,13 @@ fn run_helper(args: &[&str]) -> Result<()> {
 /// Exports a `.xmsh` mesh to a standard `.obj` (editable in Blender or any 3D tool).
 pub fn mesh_to_obj(input: &Path, output: &Path) -> Result<()> {
     run_helper(&["mesh-to-obj", &input.to_string_lossy(), &output.to_string_lossy()])
+}
+
+/// Exports a `.xmac` actor (skeleton + bind-pose mesh + materials) to a standard `.obj`.
+/// Requires a `mimicry-helper.exe` built after the `actor-to-obj` driver command was added
+/// (2026-07-15) — older builds only know `mesh-to-obj`/`obj-to-mesh`/`material-dump`.
+pub fn actor_to_obj(input: &Path, output: &Path) -> Result<()> {
+    run_helper(&["actor-to-obj", &input.to_string_lossy(), &output.to_string_lossy()])
 }
 
 /// Imports a standard `.obj` back into a `.xmsh` mesh.

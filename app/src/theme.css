@@ -1,0 +1,84 @@
+/* Ported verbatim from the approved design (RisenLab.dc.html / *.dc.html `const C` palette) —
+   dark, minimalist, one accent color, oklch throughout. */
+:root {
+  --bg0: oklch(0.14 0.005 260);
+  --bg1: oklch(0.18 0.006 260);
+  --bg2: oklch(0.24 0.008 260);
+  --border: oklch(1 0 0 / 0.08);
+  --border-strong: oklch(1 0 0 / 0.18);
+  --text: oklch(0.96 0.004 260);
+  --text-dim: oklch(0.68 0.012 260);
+  --text-faint: oklch(0.48 0.012 260);
+  --accent: oklch(0.64 0.19 255);
+  --accent-tint: oklch(0.64 0.19 255 / 0.18);
+  --green: oklch(0.66 0.15 145);
+  --red: oklch(0.65 0.19 25);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg0);
+  color: var(--text);
+  font-family:
+    -apple-system,
+    BlinkMacSystemFont,
+    "SF Pro Text",
+    "Helvetica Neue",
+    Arial,
+    sans-serif;
+  overflow: hidden;
+}
+
+::selection {
+  background: oklch(0.64 0.19 255 / 0.35);
+}
+
+a {
+  color: oklch(0.7 0.15 255);
+  text-decoration: none;
+}
+a:hover {
+  color: oklch(0.78 0.15 255);
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* Dark, thin scrollbars matching the palette instead of the default white system ones. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--bg2) transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  background-color: var(--bg2);
+  border-radius: 20px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background-color: var(--border-strong);
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}

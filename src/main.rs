@@ -84,6 +84,62 @@ enum Commands {
     /// Dump every shader element and property of a `.xmat` material to a plain-text report.
     /// Requires `mimicry-helper.exe`.
     MaterialDump { input: PathBuf, output: PathBuf },
+    /// Prints every texture from a prior `extract-textures` run as JSON (one array), for the
+    /// review UI to consume — group/archive/entry path/png path/name/folder per texture.
+    ListLibrary { out_dir: PathBuf },
+    /// Point at the game (exe or .lnk) and list every real `._xmsh` mesh across every archive
+    /// as JSON — instant, no conversion (see `mesh-to-obj-from-archive` for that).
+    ListMeshes { exe_or_shortcut: PathBuf },
+    /// Converts one mesh entry (found via `list-meshes`) to `.obj` on demand, caching the
+    /// result under `out_dir` so re-opening the same mesh later is instant.
+    MeshToObjFromArchive {
+        archive: PathBuf,
+        entry_path: String,
+        out_dir: PathBuf,
+    },
+    /// Point at the game (exe or .lnk) and list every real `._xmac` actor (skeleton + bind-pose
+    /// mesh, one per character) across every archive as JSON — instant, no conversion.
+    ListActors { exe_or_shortcut: PathBuf },
+    /// Converts one actor entry (found via `list-actors`) to `.obj` on demand (bind-pose only —
+    /// no keyframe animation), caching the result under `out_dir`.
+    ActorToObjFromArchive {
+        archive: PathBuf,
+        entry_path: String,
+        out_dir: PathBuf,
+    },
+    /// Point at the game (exe or .lnk) and list every real `._xmot` motion clip (animation) name
+    /// across every archive as JSON — instant. Keyframe playback isn't implemented yet, this is
+    /// browsing only.
+    ListMotions { exe_or_shortcut: PathBuf },
+    /// Reads the `.mtl` sibling of an already-converted `.obj` (from `mesh-to-obj-from-archive`/
+    /// `actor-to-obj-from-archive`) and prints the real diffuse/normal texture file names its
+    /// material(s) reference, as JSON — the real auto-texture-match data, not a name guess.
+    MeshTextureRefs { obj_path: PathBuf },
+    /// Prints one actor's real bone hierarchy (name/parent/bind-pose transform) as JSON,
+    /// parsed directly from the `._xmac` bytes — no `mimicry-helper.exe` involved.
+    ActorSkeleton { archive: PathBuf, entry_path: String },
+    /// Prints one motion clip's real per-bone keyframe tracks as JSON, for each bone name in
+    /// `bone_names_json` (a JSON array of strings — typically every name from `actor-skeleton`).
+    MotionTracks {
+        archive: PathBuf,
+        entry_path: String,
+        bone_names_json: String,
+    },
+    /// Prints one actor's real skinned mesh (positions/normals/UVs/faces/per-vertex bone
+    /// weights) as JSON, parsed directly from the `._xmac` bytes — no `mimicry-helper.exe`
+    /// involved, and unlike its OBJ export this carries real bone-weight data.
+    ActorSkinnedMesh { archive: PathBuf, entry_path: String },
+    /// Prints a texture's real width/height/pixel-format/file-size (read from its source
+    /// archive entry) as JSON, for the review UI's detail panel.
+    TextureMeta { archive: PathBuf, entry_path: String },
+    /// Lanczos-upscales an already-extracted PNG by `scale`x into `<out_dir>/edited/`,
+    /// ready for review/`apply-textures` — today's real "AI regenerate" capability.
+    Regenerate {
+        out_dir: PathBuf,
+        png_rel: String,
+        #[arg(default_value_t = 2)]
+        scale: u32,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -261,6 +317,67 @@ fn main() -> anyhow::Result<()> {
             for a in &archives {
                 println!("  [{}] {}", a.group, a.path.display());
             }
+        }
+        Commands::ListLibrary { out_dir } => {
+            let entries = batch::list_library(&out_dir)?;
+            println!("{}", serde_json::to_string(&entries)?);
+        }
+        Commands::ListMeshes { exe_or_shortcut } => {
+            let entries = batch::list_meshes(&exe_or_shortcut)?;
+            println!("{}", serde_json::to_string(&entries)?);
+        }
+        Commands::MeshToObjFromArchive {
+            archive,
+            entry_path,
+            out_dir,
+        } => {
+            let obj_path = batch::mesh_to_obj_from_archive(&archive, &entry_path, &out_dir)?;
+            println!("{}", serde_json::to_string(&obj_path.to_string_lossy())?);
+        }
+        Commands::ListActors { exe_or_shortcut } => {
+            let entries = batch::list_actors(&exe_or_shortcut)?;
+            println!("{}", serde_json::to_string(&entries)?);
+        }
+        Commands::ActorToObjFromArchive {
+            archive,
+            entry_path,
+            out_dir,
+        } => {
+            let obj_path = batch::actor_to_obj_from_archive(&archive, &entry_path, &out_dir)?;
+            println!("{}", serde_json::to_string(&obj_path.to_string_lossy())?);
+        }
+        Commands::ListMotions { exe_or_shortcut } => {
+            let entries = batch::list_motions(&exe_or_shortcut)?;
+            println!("{}", serde_json::to_string(&entries)?);
+        }
+        Commands::MeshTextureRefs { obj_path } => {
+            let refs = batch::read_material_texture_refs(&obj_path)?;
+            println!("{}", serde_json::to_string(&refs)?);
+        }
+        Commands::ActorSkeleton { archive, entry_path } => {
+            let nodes = batch::actor_skeleton(&archive, &entry_path)?;
+            println!("{}", serde_json::to_string(&nodes)?);
+        }
+        Commands::MotionTracks {
+            archive,
+            entry_path,
+            bone_names_json,
+        } => {
+            let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
+            let tracks = batch::motion_tracks(&archive, &entry_path, &bone_names)?;
+            println!("{}", serde_json::to_string(&tracks)?);
+        }
+        Commands::ActorSkinnedMesh { archive, entry_path } => {
+            let mesh = batch::actor_skinned_mesh(&archive, &entry_path)?;
+            println!("{}", serde_json::to_string(&mesh)?);
+        }
+        Commands::TextureMeta { archive, entry_path } => {
+            let meta = batch::texture_meta(&archive, &entry_path)?;
+            println!("{}", serde_json::to_string(&meta)?);
+        }
+        Commands::Regenerate { out_dir, png_rel, scale } => {
+            let dest = batch::regenerate(&out_dir, &png_rel, scale)?;
+            println!("Wrote {}", dest.display());
         }
     }
     Ok(())
