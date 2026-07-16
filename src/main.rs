@@ -115,6 +115,15 @@ enum Commands {
     /// `actor-to-obj-from-archive`) and prints the real diffuse/normal texture file names its
     /// material(s) reference, as JSON — the real auto-texture-match data, not a name guess.
     MeshTextureRefs { obj_path: PathBuf },
+    /// Rewrites the `.mtl` sibling of `obj_path` in place, adding a real `map_Kd`/`map_bump`
+    /// line (absolute path into `library_out_dir`, from a prior `extract-textures` run) for
+    /// every material that doesn't already declare one — makes the exported `.obj` open
+    /// correctly textured in any real 3D tool (Blender, Rimy3D, ...), not just this app's own
+    /// UI. Prints how many materials got a path added.
+    EmbedRealTexturePaths {
+        obj_path: PathBuf,
+        library_out_dir: PathBuf,
+    },
     /// Prints one actor's real bone hierarchy (name/parent/bind-pose transform) as JSON,
     /// parsed directly from the `._xmac` bytes — no `mimicry-helper.exe` involved.
     ActorSkeleton { archive: PathBuf, entry_path: String },
@@ -353,6 +362,10 @@ fn main() -> anyhow::Result<()> {
         Commands::MeshTextureRefs { obj_path } => {
             let refs = batch::read_material_texture_refs(&obj_path)?;
             println!("{}", serde_json::to_string(&refs)?);
+        }
+        Commands::EmbedRealTexturePaths { obj_path, library_out_dir } => {
+            let added = batch::embed_real_texture_paths(&obj_path, &library_out_dir)?;
+            println!("{}", serde_json::to_string(&added)?);
         }
         Commands::ActorSkeleton { archive, entry_path } => {
             let nodes = batch::actor_skeleton(&archive, &entry_path)?;

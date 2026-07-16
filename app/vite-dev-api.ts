@@ -299,6 +299,11 @@ export function risenlabDevApi(): Plugin {
             const meshCacheDir = path.join(path.dirname(settings.outputDir), "meshes");
             const { stdout } = await runCli(["mesh-to-obj-from-archive", archivePath, entryPath, meshCacheDir]);
             const objPath = JSON.parse(stdout) as string;
+            // Best-effort: makes the exported .obj self-sufficient in any real 3D tool (real
+            // map_Kd/map_bump paths, not just this app's own name-matching) — see
+            // batch::embed_real_texture_paths. Never blocks the response on failure (e.g. no
+            // texture library extracted yet); this app's own view doesn't depend on it.
+            await runCli(["embed-real-texture-paths", objPath, settings.outputDir]).catch(() => {});
             const data = await fs.readFile(objPath, "utf-8");
             res.statusCode = 200;
             res.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -318,6 +323,8 @@ export function risenlabDevApi(): Plugin {
             const actorCacheDir = path.join(path.dirname(settings.outputDir), "actors");
             const { stdout } = await runCli(["actor-to-obj-from-archive", archivePath, entryPath, actorCacheDir]);
             const objPath = JSON.parse(stdout) as string;
+            // See the matching comment in /api/mesh-obj.
+            await runCli(["embed-real-texture-paths", objPath, settings.outputDir]).catch(() => {});
             const data = await fs.readFile(objPath, "utf-8");
             res.statusCode = 200;
             res.setHeader("Content-Type", "text/plain; charset=utf-8");

@@ -671,6 +671,93 @@ pub fn read_material_texture_refs(obj_path: &Path) -> Result<MaterialTextureRefs
     Ok(MaterialTextureRefs { diffuse, normal })
 }
 
+fn strip_ext_lower(name: &str) -> String {
+    match name.rfind('.') {
+        Some(i) => name[..i].to_ascii_lowercase(),
+        None => name.to_ascii_lowercase(),
+    }
+}
+
+/// Rewrites the `.mtl` sibling of `obj_path` so every real material gets an explicit
+/// `map_Kd`/`map_bump` line pointing at the ABSOLUTE path of its real matched texture PNG in
+/// `library_out_dir` — the same base-name auto-match this app's own UI already does (see
+/// `findTextureByBaseName` in `app/src/lib/library.ts`), just baked into the file this time
+/// instead of only existing in this app's own runtime state.
+///
+/// WHY: mimicry-helper's own `.mtl` output has no map lines at all for materials that are
+/// named after their texture directly (the common real case — see `read_material_texture_refs`'s
+/// doc comment), which is fine for THIS app (it does its own name matching at read time) but
+/// means the exported `.obj`/`.mtl` pair is not self-sufficient in any *other* real tool
+/// (Blender, Rimy3D, ...) — opening it there shows an untextured/gray material because there is
+/// simply no texture file path recorded anywhere in the file. Confirmed against real data: a
+/// byte-exact comparison of our own archive-extracted mesh bytes vs. the same file extracted by
+/// Risenaut (the original, independently-authored PAK tool) showed IDENTICAL geometry — so this
+/// gap was never a data-correctness bug, only a missing interoperability feature.
+///
+/// Only fills in materials that don't already have an explicit map — never overwrites a real
+/// mimicry-supplied `map_Kd`/`map_bump`. Returns how many map lines were added.
+pub fn embed_real_texture_paths(obj_path: &Path, library_out_dir: &Path) -> Result<usize> {
+    let mtl_path = obj_path.with_extension("mtl");
+    let mtl_text = match fs::read_to_string(&mtl_path) {
+        Ok(t) => t,
+        Err(_) => return Ok(0), // no .mtl (e.g. an older cache) — nothing to do, not an error
+    };
+
+    let library = list_library(library_out_dir).unwrap_or_default();
+    let find_real_path = |ref_name: &str| -> Option<String> {
+        let target = strip_ext_lower(ref_name);
+        library
+            .iter()
+            .find(|e| strip_ext_lower(&e.name) == target)
+            .map(|e| library_out_dir.join(&e.png_rel).to_string_lossy().replace('\\', "/"))
+    };
+
+    let mut out = String::with_capacity(mtl_text.len());
+    let mut current_name: Option<String> = None;
+    let mut current_has_map_kd = false;
+    let mut current_has_map_bump = false;
+    let mut added = 0usize;
+
+    // Emits the pending map_Kd/map_bump lines (if resolvable and not already declared) for the
+    // material we just finished reading, right before moving on to the next `newmtl`/EOF.
+    let flush_pending = |out: &mut String, name: &Option<String>, has_kd: bool, has_bump: bool, added: &mut usize| {
+        let Some(name) = name else { return };
+        if !has_kd {
+            if let Some(path) = find_real_path(name) {
+                out.push_str(&format!("map_Kd {path}\r\n"));
+                *added += 1;
+                if !has_bump {
+                    if let Some(normal_name) = guess_normal_from_diffuse_name(name).and_then(|n| find_real_path(&n)) {
+                        out.push_str(&format!("map_bump {normal_name}\r\n"));
+                    }
+                }
+            }
+        }
+    };
+
+    for line in mtl_text.lines() {
+        let trimmed = line.trim();
+        if let Some(name) = trimmed.strip_prefix("newmtl ") {
+            flush_pending(&mut out, &current_name, current_has_map_kd, current_has_map_bump, &mut added);
+            current_name = Some(name.trim().to_string());
+            current_has_map_kd = false;
+            current_has_map_bump = false;
+        } else if trimmed.starts_with("map_Kd ") {
+            current_has_map_kd = true;
+        } else if trimmed.starts_with("map_bump ") {
+            current_has_map_bump = true;
+        }
+        out.push_str(line);
+        out.push_str("\r\n");
+    }
+    flush_pending(&mut out, &current_name, current_has_map_kd, current_has_map_bump, &mut added);
+
+    if added > 0 {
+        fs::write(&mtl_path, out)?;
+    }
+    Ok(added)
+}
+
 /// Upscales an already-extracted PNG via Lanczos3 resize and writes the result into an
 /// `edited/` sibling directory, ready for review/`apply`. This is today's real "AI
 /// regenerate" capability — the same placeholder pipeline proven end-to-end on the real
@@ -1055,6 +1142,90 @@ mod tests {
         assert_eq!(refs.normal, None);
 
         fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn embed_real_texture_paths_adds_real_absolute_map_lines_for_name_only_materials() {
+        let out_dir = temp_dir("embed_paths");
+        let library_dir = temp_dir("embed_paths_library");
+
+        // A real texture library, same shape `extract_all` produces: a manifest.tsv plus the
+        // real PNG files it points at.
+        let mut manifest = fs::File::create(library_dir.join(MANIFEST_NAME)).unwrap();
+        for (entry_path, png_rel) in [
+            ("/Special/ItWpn_Axes_01_Diffuse_01._ximg", "compiled/images/Special/ItWpn_Axes_01_Diffuse_01.png"),
+            ("/Special/ItWpn_Axes_01_Normal_01._ximg", "compiled/images/Special/ItWpn_Axes_01_Normal_01.png"),
+        ] {
+            write_manifest_line(
+                &mut manifest,
+                &ManifestEntry {
+                    archive: PathBuf::from("C:/Game/data/compiled/images.pak"),
+                    group: "compiled".to_string(),
+                    entry_path: entry_path.to_string(),
+                    png_rel: png_rel.to_string(),
+                    hash: 0,
+                },
+            )
+            .unwrap();
+            let png_path = library_dir.join(png_rel);
+            fs::create_dir_all(png_path.parent().unwrap()).unwrap();
+            fs::write(&png_path, b"fake png bytes").unwrap();
+        }
+        drop(manifest);
+
+        // A real-shaped .mtl (mimicry's own output): no explicit map lines, material named
+        // directly after its texture — see `read_material_texture_refs`'s doc comment.
+        let obj_path = out_dir.join("axe.obj");
+        fs::write(out_dir.join("axe.mtl"), "newmtl ItWpn_Axes_01_Diffuse_01\r\n\r\n").unwrap();
+
+        let added = embed_real_texture_paths(&obj_path, &library_dir).unwrap();
+        assert_eq!(added, 1);
+
+        let mtl_text = fs::read_to_string(out_dir.join("axe.mtl")).unwrap();
+        let expected_diffuse = library_dir.join("compiled/images/Special/ItWpn_Axes_01_Diffuse_01.png");
+        let expected_normal = library_dir.join("compiled/images/Special/ItWpn_Axes_01_Normal_01.png");
+        assert!(
+            mtl_text.contains(&format!("map_Kd {}", expected_diffuse.to_string_lossy().replace('\\', "/"))),
+            "expected a real map_Kd line, got:\n{mtl_text}"
+        );
+        assert!(
+            mtl_text.contains(&format!("map_bump {}", expected_normal.to_string_lossy().replace('\\', "/"))),
+            "expected a real map_bump line, got:\n{mtl_text}"
+        );
+
+        // Idempotent: re-running once the paths are already there adds nothing more and
+        // doesn't duplicate the lines.
+        let added_again = embed_real_texture_paths(&obj_path, &library_dir).unwrap();
+        assert_eq!(added_again, 0);
+        let mtl_text_again = fs::read_to_string(out_dir.join("axe.mtl")).unwrap();
+        assert_eq!(mtl_text_again.matches("map_Kd").count(), 1);
+
+        fs::remove_dir_all(&out_dir).ok();
+        fs::remove_dir_all(&library_dir).ok();
+    }
+
+    #[test]
+    fn embed_real_texture_paths_never_overwrites_an_explicit_map_kd_mimicry_already_wrote() {
+        let out_dir = temp_dir("embed_paths_preserve");
+        let library_dir = temp_dir("embed_paths_preserve_library");
+        fs::create_dir_all(&library_dir).unwrap();
+        fs::write(library_dir.join(MANIFEST_NAME), "").unwrap();
+
+        let obj_path = out_dir.join("sword.obj");
+        fs::write(
+            out_dir.join("sword.mtl"),
+            "newmtl Blade\r\nmap_Kd Blade_Diffuse_01.tga\r\n\r\n",
+        )
+        .unwrap();
+
+        let added = embed_real_texture_paths(&obj_path, &library_dir).unwrap();
+        assert_eq!(added, 0, "a material with its own real map_Kd must be left alone");
+        let mtl_text = fs::read_to_string(out_dir.join("sword.mtl")).unwrap();
+        assert_eq!(mtl_text.matches("map_Kd").count(), 1);
+        assert!(mtl_text.contains("map_Kd Blade_Diffuse_01.tga"));
+
+        fs::remove_dir_all(&out_dir).ok();
+        fs::remove_dir_all(&library_dir).ok();
     }
 
     #[test]

@@ -185,6 +185,9 @@ fn mesh_to_obj(state: State<AppState>, archive_path: String, entry_path: String)
         .unwrap_or_else(|| out_dir.join("meshes"));
     let obj_path = batch::mesh_to_obj_from_archive(&PathBuf::from(archive_path), &entry_path, &mesh_cache_dir)
         .map_err(|e| e.to_string())?;
+    // Best-effort, mirrors the dev-server's /api/mesh-obj — makes the exported .obj
+    // self-sufficient (real map_Kd/map_bump paths) in any real 3D tool, not just this app.
+    let _ = batch::embed_real_texture_paths(&obj_path, &out_dir);
     std::fs::read_to_string(&obj_path).map_err(|e| e.to_string())
 }
 
@@ -211,6 +214,8 @@ fn actor_to_obj(state: State<AppState>, archive_path: String, entry_path: String
         .unwrap_or_else(|| out_dir.join("actors"));
     let obj_path = batch::actor_to_obj_from_archive(&PathBuf::from(archive_path), &entry_path, &actor_cache_dir)
         .map_err(|e| e.to_string())?;
+    // See the matching comment in mesh_to_obj.
+    let _ = batch::embed_real_texture_paths(&obj_path, &out_dir);
     std::fs::read_to_string(&obj_path).map_err(|e| e.to_string())
 }
 

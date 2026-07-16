@@ -150,23 +150,42 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     let meshObject: THREE.Object3D | null = null;
     const textureLoader = new THREE.TextureLoader();
     const material = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, metalness: 0.1 });
+    // See the matching comment in Model3DViewer.tsx: a failed load used to be silently
+    // invisible (map just stays unset, mesh still renders lit/shaded and can look
+    // plausibly "textured" at a glance). Log loudly and paint an unmistakable error color
+    // instead of leaving a failed load looking like a real successful one.
+    const markTextureFailed = (kind: string, failedUrl: string, error: unknown) => {
+      console.error(`[SkeletonAnimationViewer] ${kind} texture failed to load: ${failedUrl}`, error);
+      material.color.set(0xff00ff);
+      material.needsUpdate = true;
+    };
     if (diffuseUrl) {
-      textureLoader.load(diffuseUrl, (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace;
-        // See the matching comment in Model3DViewer.tsx: the game's real UV data is never
-        // flipped to GL's bottom-left-origin convention, so three.js's default `flipY = true`
-        // doubles up into every texture rendering fully vertically mirrored.
-        tex.flipY = false;
-        material.map = tex;
-        material.needsUpdate = true;
-      });
+      textureLoader.load(
+        diffuseUrl,
+        (tex) => {
+          tex.colorSpace = THREE.SRGBColorSpace;
+          // See the matching comment in Model3DViewer.tsx: the game's real UV data is never
+          // flipped to GL's bottom-left-origin convention, so three.js's default `flipY = true`
+          // doubles up into every texture rendering fully vertically mirrored.
+          tex.flipY = false;
+          material.map = tex;
+          material.needsUpdate = true;
+        },
+        undefined,
+        (err) => markTextureFailed("diffuse", diffuseUrl, err),
+      );
     }
     if (normalUrl) {
-      textureLoader.load(normalUrl, (tex) => {
-        tex.flipY = false;
-        material.normalMap = tex;
-        material.needsUpdate = true;
-      });
+      textureLoader.load(
+        normalUrl,
+        (tex) => {
+          tex.flipY = false;
+          material.normalMap = tex;
+          material.needsUpdate = true;
+        },
+        undefined,
+        (err) => markTextureFailed("normal", normalUrl, err),
+      );
     }
 
     // CPU skinning (not THREE.SkinnedMesh — see risenlab-animation-research memory: the

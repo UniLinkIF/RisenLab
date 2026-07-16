@@ -39,12 +39,24 @@ fn run_helper(args: &[&str]) -> Result<()> {
             exe.display()
         );
     }
-    let status = Command::new(&exe)
+    // NOT `.status()` — that inherits this process's own stdout, and mimicry-helper's driver
+    // prints its own "Wrote <path>" line there. Every caller of `mesh_to_obj`/`actor_to_obj`
+    // then prints its OWN real output (a JSON-encoded path) to the same stdout right after —
+    // this app's dev-server/Tauri layer reads that combined, two-line stdout and does a plain
+    // `JSON.parse` on it, which breaks the instant mimicry-helper's own line lands first (a
+    // real regression: confirmed live, `/api/mesh-obj` started returning "Unexpected token 'W'"
+    // after mimicry-helper.exe was rebuilt with the `actor-to-obj` addition). Capture the
+    // child's stdout separately instead of inheriting it, so only this process's own,
+    // intentional output ever reaches its real stdout.
+    let output = Command::new(&exe)
         .args(args)
-        .status()
+        .output()
         .with_context(|| format!("running {}", exe.display()))?;
-    if !status.success() {
-        bail!("mimicry-helper exited with {status}");
+    if !output.status.success() {
+        // stderr is captured now instead of inherited (see above), so it must be threaded into
+        // the error message explicitly or a real mimicry-helper failure reason is lost.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("mimicry-helper exited with {}: {}", output.status, stderr.trim());
     }
     Ok(())
 }

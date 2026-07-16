@@ -86,39 +86,69 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
         roughness: 0.75,
         metalness: 0.1,
       });
+      // A failed texture load used to be silently invisible: `material.map` just stayed
+      // unset and the mesh rendered as a plain lit metallic-ish shape — real (from a normal
+      // map applying while diffuse failed) shading detail made it look plausibly "textured"
+      // at a glance even though it wasn't (confirmed: owner caught this live, a "detailed"
+      // looking axe had zero real network requests for its texture — a stale/failed load
+      // masquerading as success). Every load now has a real onError that (a) logs loudly with
+      // the failing URL so this is diagnosable instead of guessed at, and (b) paints the
+      // material an unmistakable error color instead of leaving it looking like a real,
+      // successfully-shaded metal/clay surface.
+      const markTextureFailed = (kind: string, failedUrl: string, error: unknown) => {
+        console.error(`[Model3DViewer] ${kind} texture failed to load: ${failedUrl}`, error);
+        material.color.set(0xff00ff);
+        material.needsUpdate = true;
+        requestRender();
+      };
       if (mode === "textured" && diffuseUrl) {
-        textureLoader.load(diffuseUrl, (tex) => {
-          tex.colorSpace = THREE.SRGBColorSpace;
-          // Real UV data comes straight from the game's own mesh bytes (Piranha Bytes'
-          // Genome engine, a D3D-era engine using a top-left-origin V convention) via
-          // mimicry-helper's OBJ writer — it is not re-flipped to match OpenGL/WebGL's
-          // bottom-left convention on the way out. three.js's TextureLoader defaults
-          // `flipY = true` to match that GL convention, which — combined with UVs that were
-          // never flipped to begin with — doubles up into a full vertical mirror of every
-          // texture on every model (confirmed live: a texture atlas region meant for the hips
-          // ended up rendering on the head). Disable it so the real, unflipped UVs are used
-          // as-is, matching what the game engine itself actually samples.
-          tex.flipY = false;
-          material.map = tex;
-          material.needsUpdate = true;
-          requestRender();
-        });
+        textureLoader.load(
+          diffuseUrl,
+          (tex) => {
+            tex.colorSpace = THREE.SRGBColorSpace;
+            // Real UV data comes straight from the game's own mesh bytes (Piranha Bytes'
+            // Genome engine, a D3D-era engine using a top-left-origin V convention) via
+            // mimicry-helper's OBJ writer — it is not re-flipped to match OpenGL/WebGL's
+            // bottom-left convention on the way out. three.js's TextureLoader defaults
+            // `flipY = true` to match that GL convention, which — combined with UVs that were
+            // never flipped to begin with — doubles up into a full vertical mirror of every
+            // texture on every model (confirmed live: a texture atlas region meant for the hips
+            // ended up rendering on the head). Disable it so the real, unflipped UVs are used
+            // as-is, matching what the game engine itself actually samples.
+            tex.flipY = false;
+            material.map = tex;
+            material.needsUpdate = true;
+            requestRender();
+          },
+          undefined,
+          (err) => markTextureFailed("diffuse", diffuseUrl, err),
+        );
       }
       if (mode === "textured" && normalUrl) {
-        textureLoader.load(normalUrl, (tex) => {
-          tex.flipY = false;
-          material.normalMap = tex;
-          material.needsUpdate = true;
-          requestRender();
-        });
+        textureLoader.load(
+          normalUrl,
+          (tex) => {
+            tex.flipY = false;
+            material.normalMap = tex;
+            material.needsUpdate = true;
+            requestRender();
+          },
+          undefined,
+          (err) => markTextureFailed("normal", normalUrl, err),
+        );
       }
       if (mode === "normalMap" && normalUrl) {
-        textureLoader.load(normalUrl, (tex) => {
-          tex.flipY = false;
-          material.map = tex;
-          material.needsUpdate = true;
-          requestRender();
-        });
+        textureLoader.load(
+          normalUrl,
+          (tex) => {
+            tex.flipY = false;
+            material.map = tex;
+            material.needsUpdate = true;
+            requestRender();
+          },
+          undefined,
+          (err) => markTextureFailed("normalMap-preview", normalUrl, err),
+        );
       }
       object.traverse((child) => {
         if (child instanceof THREE.Mesh) {
