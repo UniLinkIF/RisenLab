@@ -663,9 +663,24 @@ pub fn read_material_texture_refs(obj_path: &Path) -> Result<MaterialTextureRefs
     };
     let primary = materials.iter().find(|(n, _)| *n == primary_name).map(|(_, m)| m);
 
-    let diffuse = primary.and_then(|m| m.map_kd.clone()).or_else(|| Some(primary_name.clone()));
+    // `map_kd`/`map_bump` can now be either a short dev-time name straight from mimicry-helper
+    // (e.g. "Foo_Diffuse_01.tga", the original real case this was written for) OR a real
+    // absolute path this app itself wrote in place (see `embed_real_texture_paths`, which
+    // rewrites the SAME cached `.mtl` on disk so the exported `.obj` is self-sufficient in
+    // other tools). The caller (this app's own frontend) always wants a bare base name to
+    // match against its own library listing by name — a real regression found live: once a
+    // mesh's `.mtl` got a real absolute path embedded, this function started returning that
+    // whole path as `diffuse`, and the frontend's `findTextureByBaseName` (which strips only
+    // the extension, not a directory) could never match a full path against a bare library
+    // entry name, so the picker silently showed "not selected" for every mesh whose cache had
+    // already been touched by `embed_real_texture_paths`. Always take just the file-name
+    // component, regardless of which of the two `.mtl` flavors this is reading.
+    let basename = |s: &str| -> String {
+        s.rsplit(['/', '\\']).next().unwrap_or(s).to_string()
+    };
+    let diffuse = primary.and_then(|m| m.map_kd.as_deref().map(basename)).or_else(|| Some(primary_name.clone()));
     let normal = primary
-        .and_then(|m| m.map_bump.clone())
+        .and_then(|m| m.map_bump.as_deref().map(basename))
         .or_else(|| diffuse.as_deref().and_then(guess_normal_from_diffuse_name));
 
     Ok(MaterialTextureRefs { diffuse, normal })
@@ -1099,6 +1114,32 @@ mod tests {
         let refs = read_material_texture_refs(&obj_path).unwrap();
         assert_eq!(refs.diffuse.as_deref(), Some("ItWpn_SwordBlades_01_Diffuse_01.tga"));
         assert_eq!(refs.normal.as_deref(), Some("ItWpn_SwordBlades_01_Normal_01.tga"));
+
+        fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn read_material_texture_refs_returns_a_bare_name_even_when_map_kd_is_a_real_absolute_path() {
+        // Real regression found live: once `embed_real_texture_paths` rewrites a cached .mtl
+        // with a real ABSOLUTE path (so the exported .obj is self-sufficient in other tools —
+        // see that function's own doc comment), this function started returning that whole
+        // path as `diffuse` — and the frontend's own `findTextureByBaseName` (which only strips
+        // an extension, not a directory) could never match a full path against a bare library
+        // entry name, so the picker silently showed "not selected" for every mesh whose cache
+        // had already been touched once. Must always come back as a bare file name, regardless
+        // of which of the two real `.mtl` shapes (short dev-time name vs. embedded real path)
+        // this is reading.
+        let out_dir = temp_dir("material_refs_absolute_path");
+        let obj_path = out_dir.join("apple.obj");
+        fs::write(
+            out_dir.join("apple.mtl"),
+            "newmtl ItMisc_01_Diffuse_01\r\nmap_Kd C:/Users/rusak/Desktop/RisenLab-Textures/compiled/images/Special/ItMisc_01_Diffuse_01.png\r\nmap_bump C:/Users/rusak/Desktop/RisenLab-Textures/compiled/images/Special/ItMisc_01_Normal_01.png\r\n\r\n",
+        )
+        .unwrap();
+
+        let refs = read_material_texture_refs(&obj_path).unwrap();
+        assert_eq!(refs.diffuse.as_deref(), Some("ItMisc_01_Diffuse_01.png"));
+        assert_eq!(refs.normal.as_deref(), Some("ItMisc_01_Normal_01.png"));
 
         fs::remove_dir_all(&out_dir).ok();
     }
