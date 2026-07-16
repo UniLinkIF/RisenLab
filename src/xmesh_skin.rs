@@ -162,6 +162,18 @@ pub fn parse_skinned_mesh(data: &[u8]) -> Result<SkinnedMesh> {
         }
     }
 
+    // Collision hulls are stored as ordinary extra mesh sections (node "CollisionMesh") whose
+    // one reliable tell is having NO texture-coordinate sub-block — they're physics geometry,
+    // never meant to be drawn. Rendering them anyway (with zero-filled UVs) smears one texel
+    // corner across a full-body hull drawn OVER the real skin: the real SwampMummy
+    // "виглядає жахливо у прев'ю" bug (its hull reuses the REAL material ids, so hiding
+    // untextured materials on the frontend can't catch it — the Wolf's hull happened to use
+    // the untextured EMFX_Default material, which masked this). Only drop them when at least
+    // one section does carry UVs, so a hypothetical fully-UV-less actor still renders.
+    if raw_meshes.iter().any(|m| !m.raw_uvs.is_empty()) {
+        raw_meshes.retain(|m| !m.raw_uvs.is_empty());
+    }
+
     let mut out = SkinnedMesh::default();
     out.materials = materials;
     let mut vert_offset = 0u32;
@@ -573,6 +585,65 @@ mod tests {
         assert_eq!(mesh.skin_weights[1], vec![(9, 1.0)]);
         assert_eq!(mesh.skin_weights[2], vec![(11, 1.0)]);
         assert_eq!(mesh.skin_weights[3], vec![(11, 1.0)]);
+    }
+
+    /// The real SwampMummy shape: a visual mesh section WITH texture coordinates plus a
+    /// collision-hull mesh section WITHOUT any TEXCOORDS sub-block (on a different node),
+    /// whose faces reuse the REAL material ids. The hull must be dropped from the render
+    /// output — zero-filled UVs smear one texel across a full-body hull drawn over the skin.
+    #[test]
+    fn mesh_sections_without_uvs_are_dropped_as_collision_hulls() {
+        fn push_mesh_section(sections: &mut Vec<u8>, node_index: u32, with_uvs: bool) {
+            let mut body = Vec::new();
+            body.extend_from_slice(&node_index.to_le_bytes());
+            body.extend_from_slice(&3u32.to_le_bytes()); // final verts
+            body.extend_from_slice(&3u32.to_le_bytes()); // raw verts
+            body.extend_from_slice(&(1u32 * 3).to_le_bytes()); // face_count * 3
+            body.extend_from_slice(&[0u8; 4]);
+            body.extend_from_slice(&(if with_uvs { 2u32 } else { 1u32 }).to_le_bytes());
+            body.extend_from_slice(&[0u8; 4]);
+            body.extend_from_slice(&MESH_SECTION_VERTICES.to_le_bytes());
+            body.extend_from_slice(&12u32.to_le_bytes());
+            body.extend_from_slice(&[0u8; 4]);
+            for p in [[node_index as f32, 0.0f32, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+                for c in p {
+                    body.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+            if with_uvs {
+                body.extend_from_slice(&MESH_SECTION_TEXCOORDS.to_le_bytes());
+                body.extend_from_slice(&8u32.to_le_bytes());
+                body.extend_from_slice(&[0u8; 4]);
+                for uv in [[0.1f32, 0.2], [0.3, 0.4], [0.5, 0.6]] {
+                    for c in uv {
+                        body.extend_from_slice(&c.to_le_bytes());
+                    }
+                }
+            }
+            // one face part, material 0
+            body.extend_from_slice(&3u32.to_le_bytes());
+            body.extend_from_slice(&3u32.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            for i in [0u32, 1, 2] {
+                body.extend_from_slice(&i.to_le_bytes());
+            }
+            push_section(sections, SECTION_MESH, &body);
+        }
+
+        let mut sections = Vec::new();
+        push_mesh_section(&mut sections, 0, true); // visual mesh
+        push_mesh_section(&mut sections, 69, false); // collision hull (no TEXCOORDS)
+        let mut header = vec![0u8; 148];
+        header[140..143].copy_from_slice(b"XAC");
+        header[136..140].copy_from_slice(&((148 + sections.len() - 140) as u32).to_le_bytes());
+        let mut data = header;
+        data.extend_from_slice(&sections);
+
+        let mesh = parse_skinned_mesh(&data).unwrap();
+        assert_eq!(mesh.positions.len(), 3, "collision-hull section must be dropped");
+        assert_eq!(mesh.faces.len(), 1);
+        assert_eq!(mesh.uvs, vec![[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]]);
     }
 
     #[test]

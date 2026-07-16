@@ -235,6 +235,16 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
       };
       object.traverse((child) => {
         if (!(child instanceof THREE.Mesh)) return;
+        // Collision hulls (e.g. actor OBJ exports contain a second `o CollisionMesh` object)
+        // have faces with NO texture coordinates at all (`f v//vn`) — OBJLoader then builds
+        // their geometry without a `uv` attribute. Drawing such a hull in a texture-sampling
+        // mode smears one texel across a full-body shell rendered OVER the real model (the
+        // real SwampMummy preview bug). Wireframe/clay modes don't sample textures, so the
+        // hull stays visible there (it's genuinely useful to inspect).
+        if ((mode === "textured" || mode === "normalMap") && !child.geometry.getAttribute("uv")) {
+          child.visible = false;
+          return;
+        }
         if (Array.isArray(child.material)) {
           child.material = child.material.map((m) => materialFor(m));
         } else {
