@@ -4,27 +4,35 @@
 //! `docs/formats/xmot.md` for the full reverse-engineering trail). This module is an
 //! independent implementation, empirically validated against real Wolf animation clips.
 //!
-//! **Per-bone record layout** (found empirically, byte-exact-validated: after scanning a
-//! bone's position/rotation/scale channels, the next 132 bytes are always a fixed-size
-//! trailing block, landing byte-exact on the *next* bone's own name, across every real bone
-//! tested — animated and static alike):
-//! `[u32 name_len][name][position keys][rotation keys][scale keys][132-byte trailing block]`
+//! **Per-bone record layout** (found empirically; the header attribution below was finally
+//! pinned down on the real Ogre walk clip, byte-exact-validated across records):
+//! `[132-byte header][u32 name_len][name][position keys][rotation keys][scale keys][scale-rotation keys]`
+//! - the 132-byte header PRECEDES its own bone's name (an earlier reading treated it as a
+//!   trailing block of the previous record — same bytes, wrong owner) and holds the
+//!   submotion's `poseRot`/`bindPoseRot`/`poseScaleRot`/`bindScaleRot` quaternions and
+//!   `posePos`/`poseScale`/`bindPos`/`bindScale` vectors (4 quats + 4 vec3 = 112 bytes),
+//!   then **four `u32` per-channel key counts at header offsets 112/116/120/124**:
+//!   `numPosKeys`, `numRotKeys`, `numScaleKeys`, `numScaleRotKeys`, then one more 4-byte
+//!   field of unknown meaning (128..132).
 //! - a position/scale key is `[f32 x, f32 y, f32 z, f32 time]` (16 bytes)
-//! - a rotation key is `[f32 x, f32 y, f32 z, f32 w, f32 time]` (20 bytes, unit quaternion)
-//! - the 132-byte trailing block holds `poseRot`/`bindPoseRot`/`poseScaleRot`/
-//!   `bindPoseScaleRot` quaternions and `pos`/`scale`/`bindPos`/`bindScale` vectors (matching
-//!   4 quats + 4 vec3 = 112 bytes) plus a handful of trailing fields whose exact meaning
-//!   isn't decoded yet (not needed for playback — the equivalent bind-pose data already
-//!   comes from the matching `.xmac` actor via `xmac::parse_skeleton`)
+//! - a rotation/scale-rotation key is `[f32 x, f32 y, f32 z, f32 w, f32 time]` (20 bytes,
+//!   unit quaternion)
 //!
-//! **Why this scans instead of trusting an upfront key count**: the surrounding chunk
-//! framing (`"GR01"`/`"MO01"` wrapper, `MOTION_CHUNK_INFO`/`MOTION_CHUNK_SUBMOTIONS`) is only
-//! partially mapped — in particular, no field was ever found that reliably holds a given
-//! bone's real key count (a constant `131`-valued field recurs in the trailing block on
-//! *every* bone regardless of its real key count, so it isn't that). What's fully reliable
-//! instead is that each channel's first real key always starts at `time == 0.0`, and every
-//! following key's time strictly increases by a small step — so a channel's real length is
-//! determined by scanning until that pattern breaks, not by reading a count.
+//! **Why the counts matter (a real, owner-visible bug)**: an earlier version had no counts
+//! and detected channels by scanning while `time` restarts at 0 and strictly increases. That
+//! misreads every bone whose ROTATION channel is empty but whose SCALE-ROTATION channel is
+//! not — both are 20-byte quat+time streams, so the scan swallowed the scale-rotation keys
+//! (near-identity wobble quats) as the bone's rotation track. On the real Ogre walk clip the
+//! hip/teeth/hand bones have exactly that shape (`numRotKeys == 0`, `numScaleRotKeys == 36`),
+//! so both hips got near-identity local rotations instead of their ~97°-from-identity bind
+//! rotation — folding the legs up into the body ("в анімації ламаються САМЕ НОГИ").
+//! The constant `131`-valued field noted earlier as a red herring was in fact the Wolf clip's
+//! `numScaleRotKeys` — it recurred on every bone because every bone had a full scale-rotation
+//! channel, while rotation counts varied.
+//!
+//! The old time-step scan is kept as a **fallback** for records where no plausible header is
+//! found (defensive against not-yet-seen clip variants; validated identical on all clips
+//! where counts are present).
 
 use anyhow::{bail, Result};
 use serde::Serialize;
@@ -146,6 +154,58 @@ fn find_length_prefixed_name(data: &[u8], name: &str, from_offset: usize) -> Opt
     None
 }
 
+/// Offset of the four per-channel `u32` key counts inside the 132-byte record header.
+const HEADER_KEY_COUNTS_OFFSET: usize = 112;
+/// Sanity cap on a single channel's declared key count — real clips top out at a few hundred
+/// keys (30fps × clip seconds); anything huge means we're not looking at a real header.
+const MAX_PLAUSIBLE_KEYS: u32 = 100_000;
+
+fn read_u32(data: &[u8], off: usize) -> Option<u32> {
+    data.get(off..off + 4).map(|b| u32::from_le_bytes(b.try_into().unwrap()))
+}
+
+/// The four per-channel key counts (`numPos`, `numRot`, `numScale`, `numScaleRot`) from the
+/// 132-byte header that immediately precedes `name_off`, or `None` when there's no room for a
+/// header or the values are implausible (→ caller falls back to time-step scanning).
+fn read_header_key_counts(data: &[u8], name_off: usize) -> Option<[u32; 4]> {
+    let header_off = name_off.checked_sub(TAIL_BLOCK_LEN)?;
+    let mut counts = [0u32; 4];
+    for (i, c) in counts.iter_mut().enumerate() {
+        let v = read_u32(data, header_off + HEADER_KEY_COUNTS_OFFSET + i * 4)?;
+        if v > MAX_PLAUSIBLE_KEYS {
+            return None;
+        }
+        *c = v;
+    }
+    Some(counts)
+}
+
+fn read_vec3_time_keys(data: &[u8], start: usize, count: u32) -> Option<(Vec<[f32; 4]>, usize)> {
+    let mut keys = Vec::with_capacity(count as usize);
+    let mut off = start;
+    for _ in 0..count {
+        keys.push([read_f32(data, off)?, read_f32(data, off + 4)?, read_f32(data, off + 8)?, read_f32(data, off + 12)?]);
+        off += 16;
+    }
+    Some((keys, off - start))
+}
+
+fn read_quat_time_keys(data: &[u8], start: usize, count: u32) -> Option<(Vec<[f32; 5]>, usize)> {
+    let mut keys = Vec::with_capacity(count as usize);
+    let mut off = start;
+    for _ in 0..count {
+        keys.push([
+            read_f32(data, off)?,
+            read_f32(data, off + 4)?,
+            read_f32(data, off + 8)?,
+            read_f32(data, off + 12)?,
+            read_f32(data, off + 16)?,
+        ]);
+        off += 20;
+    }
+    Some((keys, off - start))
+}
+
 /// Parses the real per-bone position/rotation/scale keyframe tracks out of a decompressed
 /// `._xmot` motion clip, one per name in `bone_names` (typically every bone in the matching
 /// `.xmac` actor's skeleton — a bone this clip doesn't animate simply comes back with all
@@ -163,11 +223,29 @@ pub fn parse_motion(data: &[u8], bone_names: &[String]) -> Result<Vec<BoneMotion
             continue;
         };
         let body_start = name_off + 4 + bone_name.len();
+
+        // Preferred path: exact per-channel key counts from the record's own 132-byte header.
+        // This is what correctly distinguishes an empty ROTATION channel followed by a full
+        // SCALE-ROTATION channel (both are 20-byte quat+time streams) — see the module docs
+        // for the real Ogre legs bug this fixes.
+        if let Some([num_pos, num_rot, num_scale, _num_scale_rot]) = read_header_key_counts(data, name_off) {
+            if let Some((position_keys, pos_len)) = read_vec3_time_keys(data, body_start, num_pos) {
+                if let Some((rotation_keys, rot_len)) = read_quat_time_keys(data, body_start + pos_len, num_rot) {
+                    if let Some((scale_keys, _)) = read_vec3_time_keys(data, body_start + pos_len + rot_len, num_scale) {
+                        // scale-rotation keys follow, deliberately unused for playback
+                        out.push(BoneMotion { bone_name: bone_name.clone(), position_keys, rotation_keys, scale_keys });
+                        continue;
+                    }
+                }
+            }
+        }
+
+        // Fallback: the original time-step scan (kept for clip variants without a readable
+        // header). Its known limitation: a bone with scale-rotation keys but no rotation keys
+        // gets the scale-rotation stream misread as its rotation track.
         let (position_keys, pos_len) = scan_vec3_time_track(data, body_start, data.len());
         let (rotation_keys, rot_len) = scan_quat_time_track(data, body_start + pos_len, data.len());
-        let (scale_keys, scale_len) = scan_vec3_time_track(data, body_start + pos_len + rot_len, data.len());
-        let _ = TAIL_BLOCK_LEN; // documents the expected trailing block; not read — see module docs
-        let _record_end = body_start + pos_len + rot_len + scale_len + TAIL_BLOCK_LEN;
+        let (scale_keys, _) = scan_vec3_time_track(data, body_start + pos_len + rot_len, data.len());
         out.push(BoneMotion { bone_name: bone_name.clone(), position_keys, rotation_keys, scale_keys });
     }
     Ok(out)
@@ -268,5 +346,58 @@ mod tests {
         assert!(result[0].position_keys.is_empty());
         assert_eq!(result[1].bone_name, "Bone_Head");
         assert_eq!(result[1].position_keys, vec![[1.0, 2.0, 3.0, 0.0]]);
+    }
+
+    /// A real-shaped 132-byte header: 112 bytes of pose/bind transform data, then the four
+    /// per-channel key counts (pos/rot/scale/scaleRot), then 4 unknown bytes.
+    fn push_header_with_counts(buf: &mut Vec<u8>, num_pos: u32, num_rot: u32, num_scale: u32, num_scale_rot: u32) {
+        for _ in 0..(HEADER_KEY_COUNTS_OFFSET / 4) {
+            buf.extend_from_slice(&0.5f32.to_le_bytes());
+        }
+        for c in [num_pos, num_rot, num_scale, num_scale_rot] {
+            buf.extend_from_slice(&c.to_le_bytes());
+        }
+        buf.extend_from_slice(&[0u8; 4]);
+    }
+
+    /// The exact Ogre-legs shape: a bone whose ROTATION channel is empty but whose
+    /// SCALE-ROTATION channel has keys. The scale-rotation stream is byte-identical in shape
+    /// to a rotation stream (quat + time), so only the header's counts can tell them apart —
+    /// misreading it as the rotation track is what folded the Ogre's legs up into its body.
+    #[test]
+    fn scale_rotation_keys_are_not_mistaken_for_rotation_keys() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"XSM ");
+        buf.extend_from_slice(&[1, 1, 0, 0]);
+        push_header_with_counts(&mut buf, 0, 0, 0, 2);
+        push_name(&mut buf, "Bone_Left_Leg_Hip_1");
+        // scale-rotation channel only: near-identity wobble quats, times from 0
+        push_rot_key(&mut buf, 0.001, 0.002, -0.03, 0.9995, 0.0);
+        push_rot_key(&mut buf, -0.002, 0.001, 0.01, 0.9998, 0.04);
+        let result = parse_motion(&buf, &["Bone_Left_Leg_Hip_1".to_string()]).unwrap();
+        assert!(result[0].rotation_keys.is_empty(), "scale-rotation keys must not become the rotation track");
+        assert!(result[0].position_keys.is_empty());
+        assert!(result[0].scale_keys.is_empty());
+    }
+
+    #[test]
+    fn header_key_counts_split_rotation_from_scale_rotation() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"XSM ");
+        buf.extend_from_slice(&[1, 1, 0, 0]);
+        push_header_with_counts(&mut buf, 1, 2, 0, 1);
+        push_name(&mut buf, "Bone_Left_Leg_Leg_1");
+        push_pos_key(&mut buf, 19.9, 0.0, 0.0, 0.0);
+        // real rotation channel (big quats)
+        push_rot_key(&mut buf, 0.43, -0.29, 0.57, 0.64, 0.0);
+        push_rot_key(&mut buf, 0.48, -0.34, 0.53, 0.62, 0.04);
+        // scale-rotation channel (near identity) — must be excluded
+        push_rot_key(&mut buf, 0.005, 0.02, -0.002, 0.9998, 0.0);
+        let result = parse_motion(&buf, &["Bone_Left_Leg_Leg_1".to_string()]).unwrap();
+        assert_eq!(result[0].position_keys, vec![[19.9, 0.0, 0.0, 0.0]]);
+        assert_eq!(result[0].rotation_keys.len(), 2);
+        assert_eq!(result[0].rotation_keys[0], [0.43, -0.29, 0.57, 0.64, 0.0]);
+        assert_eq!(result[0].rotation_keys[1], [0.48, -0.34, 0.53, 0.62, 0.04]);
+        assert!(result[0].scale_keys.is_empty());
     }
 }

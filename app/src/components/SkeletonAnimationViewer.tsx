@@ -294,14 +294,18 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
       // Multi-material rendering from the actor's own real material list: faces regrouped
       // into contiguous per-material runs (`groupFacesByMaterial`), one geometry group + one
       // material per real material, each loading its own referenced diffuse/normal. Materials
-      // without their own texture reference (e.g. the engine's "EMFX_Default") keep the
-      // fallback pair — the previous whole-mesh behavior.
+      // with no texture reference at all (the engine's "EMFX_Default") are HIDDEN when any
+      // textured material exists: on real actors those faces are a skinned collision hull
+      // (a whole second low-poly mesh section spanning the entire body — verified on the real
+      // Wolf: 500 faces, own vertex range, node "collisionMesh"), and painting it with the
+      // fallback texture drew a flat smeared shell OVER the real fur/skin.
       let meshMaterials: THREE.Material | THREE.Material[] = material;
       const realMaterials = skinnedMesh.materials ?? [];
       const faceIds = skinnedMesh.faceMaterialIds ?? [];
       if (resolveTexture && realMaterials.length > 1 && faceIds.length === skinnedMesh.faces.length) {
         const { index, groups } = groupFacesByMaterial(skinnedMesh.faces, faceIds);
         geometry.setIndex(index);
+        const anyTextured = realMaterials.some((m) => m?.diffuse || m?.normal);
         const materialList: THREE.MeshStandardMaterial[] = [];
         groups.forEach((group, slot) => {
           geometry.addGroup(group.start, group.count, slot);
@@ -319,6 +323,8 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
                 else loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null);
               })
               .catch(() => loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null));
+          } else if (anyTextured) {
+            target.visible = false;
           } else {
             loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null);
           }

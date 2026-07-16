@@ -202,18 +202,21 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
     function applyMaterial(object: THREE.Object3D) {
       const fallback = newMaterial();
       loadTexturesInto(fallback, diffuseUrl, normalUrl);
-      // OBJLoader creates one child mesh per `usemtl` group, with the material name preserved
-      // on its placeholder material — that name is this game's real per-submesh texture key
-      // (see the `resolveTexture` prop doc). One shared material per distinct name, resolved
-      // once; anything unresolvable keeps the fallback (the side panel's auto-matched pair).
+      // Each `usemtl` name is this game's real per-submesh texture key (see the
+      // `resolveTexture` prop doc). One shared material per distinct name, resolved once;
+      // anything unresolvable keeps the fallback (the side panel's auto-matched pair).
+      //
+      // OBJLoader shape gotcha (a real bug on the Titan axe): with a single `usemtl` per
+      // `o`/`g` group it emits one child mesh per material, but with SEVERAL `usemtl` under
+      // one `o` it emits ONE mesh whose `material` is an ARRAY (plus geometry groups). The
+      // old code only read `material.name` off single materials and sent every array-material
+      // mesh whole to the fallback — so It_Wpn_Axe_Titan's handle (minority material,
+      // SwordMisc atlas) was sampled from the blades' Axes atlas: pale stone instead of dark
+      // wood/leather. Resolve each array slot by its own name instead.
       const byName = new Map<string, THREE.MeshStandardMaterial>();
-      object.traverse((child) => {
-        if (!(child instanceof THREE.Mesh)) return;
-        const materialName = !Array.isArray(child.material) && child.material ? child.material.name : "";
-        if (mode !== "textured" || !resolveTexture || !materialName) {
-          child.material = fallback;
-          return;
-        }
+      const materialFor = (source: THREE.Material | null | undefined): THREE.MeshStandardMaterial => {
+        const materialName = source?.name ?? "";
+        if (mode !== "textured" || !resolveTexture || !materialName) return fallback;
         let material = byName.get(materialName);
         if (!material) {
           material = newMaterial();
@@ -228,7 +231,15 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
             })
             .catch(() => loadTexturesInto(target, diffuseUrl, normalUrl));
         }
-        child.material = material;
+        return material;
+      };
+      object.traverse((child) => {
+        if (!(child instanceof THREE.Mesh)) return;
+        if (Array.isArray(child.material)) {
+          child.material = child.material.map((m) => materialFor(m));
+        } else {
+          child.material = materialFor(child.material);
+        }
       });
     }
 

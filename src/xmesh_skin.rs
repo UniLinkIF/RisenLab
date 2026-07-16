@@ -8,14 +8,18 @@
 //!
 //! Real layout quirks worth remembering if this needs revisiting:
 //! - Vertex/normal/UV sub-blocks are written in **raw stream order** (`0..uniqueVertCount`), and
-//!   a separate `BaseVerts` sub-block maps each raw index to its **final** position in the
-//!   output vertex array (`final = arrBaseVerts[raw]`) — real games routinely have more raw
-//!   entries than final vertices (or vice versa) because per-corner UV splits duplicate a
-//!   shared position across several raw entries that all collapse to the same final vertex.
-//! - Face indices in the raw stream are **also** in raw-index space and need the same
-//!   `arrBaseVerts` remap applied after reading (done once, inside `parse_mesh_section` —
-//!   faces coming back out of it are already final-space, unlike positions/normals/uvs which
-//!   the caller remaps itself since it needs the raw arrays for the skin section too).
+//!   a separate `BaseVerts` sub-block maps each raw index to its **final** position
+//!   (`final = arrBaseVerts[raw]`) — real games routinely have more raw entries than final
+//!   vertices because per-corner UV/normal splits duplicate a shared position across several
+//!   raw entries that all collapse to the same final vertex.
+//! - **The output of this parser stays in RAW vertex space on purpose.** An earlier version
+//!   collapsed raw vertices to final space (one UV per final vertex) — a real, owner-visible
+//!   bug: the duplicates exist precisely to carry *different* UVs at texture seams (real Wolf:
+//!   3857 raw vs 3252 final — 719 final vertices carry 2+ distinct UVs, and 43.7% of faces
+//!   touch at least one), so collapsing smeared triangles clear across the texture atlas
+//!   (rendered as "most of the body is flat/wrong color"). Faces are therefore kept raw-space
+//!   too, and skin weights (stored per FINAL vertex in the file) are expanded per raw vertex
+//!   via `weights[base_verts[raw]]`. See `uv_seam_duplicates_keep_their_own_uvs`.
 //! - The skin section's per-vertex weight-count table is indexed by **final** vertex already
 //!   (the real reader passes its loop counter straight to `mCSkin::InitSwapping` with no
 //!   `arrBaseVerts` remap anywhere in that code path) — unlike the mesh's own vertex/normal/UV
@@ -60,7 +64,8 @@ pub struct SkinnedMeshMaterial {
 #[derive(Debug, Clone, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct SkinnedMesh {
-    /// Final vertex positions, one `[x, y, z]` per vertex.
+    /// Vertex positions, one `[x, y, z]` per RAW vertex (UV-seam duplicates kept — see the
+    /// module doc for why collapsing them is a real rendering bug).
     pub positions: Vec<[f32; 3]>,
     /// Parallel to `positions`; all-zero entries if the file had no normals sub-block.
     pub normals: Vec<[f32; 3]>,
@@ -98,11 +103,13 @@ struct RawMesh {
     raw_positions: Vec<[f32; 3]>,
     raw_normals: Vec<[f32; 3]>,
     raw_uvs: Vec<[f32; 2]>,
-    /// `final_index = base_verts[raw_index]` — the same remap table used for the skin section.
+    /// `final_index = base_verts[raw_index]` — needed to expand the skin section's per-FINAL-
+    /// vertex weights onto raw vertices.
     base_verts: Vec<u32>,
     final_vert_count: usize,
-    /// Faces already remapped to FINAL vertex-index space (0..final_vert_count).
-    faces_final: Vec<[u32; 3]>,
+    /// Faces in RAW vertex-index space (0..uvert_count) — deliberately NOT remapped through
+    /// `base_verts`, so UV-seam duplicate vertices keep their own distinct UVs.
+    faces_raw: Vec<[u32; 3]>,
     /// Parallel to `faces_final`: each face-part's material id, repeated per face in the part.
     face_material_ids: Vec<u32>,
 }
@@ -158,69 +165,65 @@ pub fn parse_skinned_mesh(data: &[u8]) -> Result<SkinnedMesh> {
     let mut out = SkinnedMesh::default();
     out.materials = materials;
     let mut vert_offset = 0u32;
-    // Only the running vertex offset is needed for the skin section below — its own per-vertex
-    // index is already in FINAL vertex-index space (see the note above `parse_skin_section`),
-    // unlike positions/normals/UVs/faces, which are raw-space and need `base_verts` themselves.
+    // Output stays in RAW vertex space (offset = running raw count); `node_offsets` remembers
+    // each node's slice start + which RawMesh it was, so the skin section's per-FINAL-vertex
+    // weights can be expanded onto every raw duplicate below.
     let mut node_offsets: HashMap<usize, (u32, usize)> = HashMap::new();
 
-    for mesh in &raw_meshes {
-        let mut positions = vec![[0.0f32; 3]; mesh.final_vert_count];
-        let mut normals = vec![[0.0f32; 3]; mesh.final_vert_count];
-        let mut uvs = vec![[0.0f32; 2]; mesh.final_vert_count];
-        for (raw_i, &final_i) in mesh.base_verts.iter().enumerate() {
-            let fi = final_i as usize;
-            // Deliberately a plain passthrough, NOT the Z-negation an earlier version of this
-            // had (verified back then only against `mimicry-helper`'s separately-converted
-            // `.obj` — a third, independent coordinate convention this code no longer needs to
-            // match). What actually matters is agreeing with `xmac::parse_skeleton`'s bones,
-            // which use plain identity — real owner testing found the mesh and skeleton facing
-            // opposite directions *regardless* of the `mirrored` toggle (which flips both
-            // equally, so it can't fix a mismatch between them), proving they need to share
-            // one convention here, not each separately match the `.obj`.
-            if let Some(p) = mesh.raw_positions.get(raw_i) {
-                positions[fi] = *p;
-            }
-            if let Some(n) = mesh.raw_normals.get(raw_i) {
-                normals[fi] = *n;
-            }
-            if let Some(uv) = mesh.raw_uvs.get(raw_i) {
-                uvs[fi] = *uv;
-            }
-        }
-        out.positions.extend(positions);
-        out.normals.extend(normals);
+    for (mesh_i, mesh) in raw_meshes.iter().enumerate() {
+        let raw_count = mesh.base_verts.len();
+        let pad3 = |src: &Vec<[f32; 3]>| -> Vec<[f32; 3]> {
+            let mut v = src.clone();
+            v.resize(raw_count, [0.0; 3]);
+            v
+        };
+        // Positions/normals are a plain passthrough (no coordinate conversion) to agree with
+        // `xmac::parse_skeleton`'s bones, which also use plain identity. An earlier version
+        // negated Z here (verified only against `mimicry-helper`'s separately-converted
+        // `.obj`, a third, independent convention), which put the mesh and skeleton in
+        // *different* spaces — real owner testing found them facing opposite directions
+        // regardless of the `mirrored` toggle (which flips both equally, so it can't fix a
+        // mismatch between them).
+        out.positions.extend(pad3(&mesh.raw_positions));
+        out.normals.extend(pad3(&mesh.raw_normals));
+        let mut uvs = mesh.raw_uvs.clone();
+        uvs.resize(raw_count, [0.0; 2]);
         out.uvs.extend(uvs);
-        for face in &mesh.faces_final {
-            // No winding reversal either now — that was only compensating for the Z-negation
-            // above, which is gone.
+        for face in &mesh.faces_raw {
             out.faces.push([face[0] + vert_offset, face[1] + vert_offset, face[2] + vert_offset]);
         }
         out.face_material_ids.extend_from_slice(&mesh.face_material_ids);
-        node_offsets.insert(mesh.node_index, (vert_offset, mesh.final_vert_count));
-        vert_offset += mesh.final_vert_count as u32;
+        node_offsets.insert(mesh.node_index, (vert_offset, mesh_i));
+        vert_offset += raw_count as u32;
     }
     out.skin_weights = vec![Vec::new(); vert_offset as usize];
 
     for (node_index, weights, bone_indices, per_vert_count) in &skin_entries {
-        let Some(&(offset, final_vert_count)) = node_offsets.get(node_index) else { continue };
+        let Some(&(offset, mesh_i)) = node_offsets.get(node_index) else { continue };
+        let mesh = &raw_meshes[mesh_i];
+        // The skin section's own per-vertex loop counter is a FINAL vertex index (the real
+        // reader passes it straight to `mCSkin::InitSwapping` with no `base_verts` remap
+        // anywhere in that code path). Applying the remap to it (an earlier real bug) silently
+        // scattered weight data onto unrelated vertices — it rendered as a "torn"/mangled mesh
+        // once animated, since a bone far from a given vertex would end up controlling it.
+        // Gather per-final-vertex weight lists first...
+        let mut final_weights: Vec<Vec<(u32, f32)>> = vec![Vec::new(); mesh.final_vert_count];
         let mut w_i = 0usize;
-        // The skin section's own per-vertex loop counter is already a FINAL vertex index (the
-        // real reader passes it straight to `mCSkin::InitSwapping` with no `base_verts` remap
-        // anywhere in that code path) — unlike the mesh's raw vertex/normal/UV data, which does
-        // need that remap. Applying it here too (an earlier real bug) silently scattered weight
-        // data onto unrelated vertices — it rendered as a "torn"/mangled mesh once animated,
-        // since a bone far from a given vertex would end up controlling it.
         for (final_vert, &count) in per_vert_count.iter().enumerate() {
-            if final_vert >= final_vert_count {
-                w_i += count as usize;
-                continue;
-            }
-            let out_i = offset as usize + final_vert;
             for _ in 0..count {
                 if w_i < weights.len() {
-                    out.skin_weights[out_i].push((bone_indices[w_i] as u32, weights[w_i]));
+                    if let Some(slot) = final_weights.get_mut(final_vert) {
+                        slot.push((bone_indices[w_i] as u32, weights[w_i]));
+                    }
                 }
                 w_i += 1;
+            }
+        }
+        // ...then expand onto every raw duplicate: a seam duplicate shares its base vertex's
+        // skin weights (it's the same physical point — only its UV/normal differ).
+        for (raw_i, &final_i) in mesh.base_verts.iter().enumerate() {
+            if let Some(w) = final_weights.get(final_i as usize) {
+                out.skin_weights[offset as usize + raw_i] = w.clone();
             }
         }
     }
@@ -360,10 +363,6 @@ fn parse_mesh_section(data: &[u8], section_start: usize) -> Result<RawMesh> {
         passed_faces += part_face_count;
         passed_verts += part_vert_count;
     }
-    let faces_final: Vec<[u32; 3]> = faces_raw
-        .iter()
-        .map(|f| [base_verts[f[0] as usize], base_verts[f[1] as usize], base_verts[f[2] as usize]])
-        .collect();
 
     Ok(RawMesh {
         node_index,
@@ -372,7 +371,7 @@ fn parse_mesh_section(data: &[u8], section_start: usize) -> Result<RawMesh> {
         raw_uvs,
         base_verts,
         final_vert_count: vert_count,
-        faces_final,
+        faces_raw,
         face_material_ids,
     })
 }
@@ -481,20 +480,23 @@ mod tests {
     }
 
     /// A mesh where 4 raw (pre-UV-split) vertices collapse to 2 final vertices via `BaseVerts`
-    /// (raw 0,1 -> final 0; raw 2,3 -> final 1) — the exact shape that exposed the real bug:
-    /// skin weights are indexed by FINAL vertex directly (2 entries here), not by raw vertex,
-    /// and applying the raw->final remap to them a second time scattered weights onto the
-    /// wrong vertices (this rendered as a "torn"/mangled mesh once animated in the real app).
+    /// (raw 0,1 -> final 0; raw 2,3 -> final 1) — the exact shape that exposed TWO real bugs:
+    /// (1) skin weights are indexed by FINAL vertex directly (2 entries here), not by raw
+    /// vertex — applying the raw->final remap to them a second time scattered weights onto the
+    /// wrong vertices ("torn"/mangled mesh once animated); (2) each raw duplicate must keep its
+    /// OWN UV (collapsing to one UV per final vertex smeared triangles across texture seams —
+    /// the real Wolf "most of the body is the wrong color" bug).
     fn synthetic_xmac_with_collapsed_verts() -> Vec<u8> {
         let raw_positions: [[f32; 3]; 4] = [[1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [2.0, 0.0, 0.0]];
+        let raw_uvs: [[f32; 2]; 4] = [[0.1, 0.2], [0.8, 0.9], [0.3, 0.4], [0.6, 0.7]];
         let base_verts: [u32; 4] = [0, 0, 1, 1];
         let mut mesh_body = Vec::new();
         mesh_body.extend_from_slice(&0u32.to_le_bytes()); // node_index
         mesh_body.extend_from_slice(&2u32.to_le_bytes()); // vert_count (final)
         mesh_body.extend_from_slice(&4u32.to_le_bytes()); // uvert_count (raw)
-        mesh_body.extend_from_slice(&0u32.to_le_bytes()); // face_count * 3 (no faces needed here)
+        mesh_body.extend_from_slice(&(1u32 * 3).to_le_bytes()); // face_count * 3
         mesh_body.extend_from_slice(&[0u8; 4]);
-        mesh_body.extend_from_slice(&2u32.to_le_bytes()); // mesh_section_count (vertices + base verts)
+        mesh_body.extend_from_slice(&3u32.to_le_bytes()); // mesh_section_count (vertices + uvs + base verts)
         mesh_body.extend_from_slice(&[0u8; 4]);
         mesh_body.extend_from_slice(&MESH_SECTION_VERTICES.to_le_bytes());
         mesh_body.extend_from_slice(&12u32.to_le_bytes());
@@ -504,13 +506,29 @@ mod tests {
                 mesh_body.extend_from_slice(&c.to_le_bytes());
             }
         }
+        mesh_body.extend_from_slice(&MESH_SECTION_TEXCOORDS.to_le_bytes());
+        mesh_body.extend_from_slice(&8u32.to_le_bytes());
+        mesh_body.extend_from_slice(&[0u8; 4]);
+        for uv in raw_uvs {
+            for c in uv {
+                mesh_body.extend_from_slice(&c.to_le_bytes());
+            }
+        }
         mesh_body.extend_from_slice(&MESH_SECTION_BASEVERTS.to_le_bytes());
         mesh_body.extend_from_slice(&4u32.to_le_bytes());
         mesh_body.extend_from_slice(&[0u8; 4]);
         for v in base_verts {
             mesh_body.extend_from_slice(&v.to_le_bytes());
         }
-        // no face parts (passed_faces starts at 0 == face_count, loop never runs)
+        // one face part referencing RAW indices 1,2,3 — output must keep them raw, NOT remap
+        // them through base_verts (which would collapse the seam)
+        mesh_body.extend_from_slice(&3u32.to_le_bytes());
+        mesh_body.extend_from_slice(&4u32.to_le_bytes());
+        mesh_body.extend_from_slice(&0u32.to_le_bytes());
+        mesh_body.extend_from_slice(&0u32.to_le_bytes());
+        for i in [1u32, 2, 3] {
+            mesh_body.extend_from_slice(&i.to_le_bytes());
+        }
 
         let mut skin_body = Vec::new();
         skin_body.extend_from_slice(&0u32.to_le_bytes()); // node_index
@@ -547,10 +565,29 @@ mod tests {
     fn skin_weights_index_by_final_vertex_not_raw_vertex() {
         let data = synthetic_xmac_with_collapsed_verts();
         let mesh = parse_skinned_mesh(&data).unwrap();
-        assert_eq!(mesh.positions.len(), 2);
-        assert_eq!(mesh.skin_weights.len(), 2);
+        // Output is RAW space: 4 vertices, each seam duplicate inheriting its base (final)
+        // vertex's skin weights. The 2 skin entries are per FINAL vertex in the file.
+        assert_eq!(mesh.positions.len(), 4);
+        assert_eq!(mesh.skin_weights.len(), 4);
         assert_eq!(mesh.skin_weights[0], vec![(9, 1.0)]);
-        assert_eq!(mesh.skin_weights[1], vec![(11, 1.0)]);
+        assert_eq!(mesh.skin_weights[1], vec![(9, 1.0)]);
+        assert_eq!(mesh.skin_weights[2], vec![(11, 1.0)]);
+        assert_eq!(mesh.skin_weights[3], vec![(11, 1.0)]);
+    }
+
+    #[test]
+    fn uv_seam_duplicates_keep_their_own_uvs() {
+        let data = synthetic_xmac_with_collapsed_verts();
+        let mesh = parse_skinned_mesh(&data).unwrap();
+        // Every raw duplicate keeps its OWN UV — collapsing raw 1 onto final 0 (losing
+        // [0.8, 0.9]) was the real "texture smeared across the atlas" bug.
+        assert_eq!(mesh.uvs, vec![[0.1, 0.2], [0.8, 0.9], [0.3, 0.4], [0.6, 0.7]]);
+        // Faces stay in raw index space; remapping them through base_verts would collapse the
+        // seam and pick up the wrong UV.
+        assert_eq!(mesh.faces, vec![[1, 2, 3]]);
+        // Positions of duplicates match their base vertex (same physical point).
+        assert_eq!(mesh.positions[0], mesh.positions[1]);
+        assert_eq!(mesh.positions[2], mesh.positions[3]);
     }
 
     #[test]
