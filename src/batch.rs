@@ -704,12 +704,21 @@ pub fn embed_real_texture_paths(obj_path: &Path, library_out_dir: &Path) -> Resu
     };
 
     let library = list_library(library_out_dir).unwrap_or_default();
-    let find_real_path = |ref_name: &str| -> Option<String> {
-        let target = strip_ext_lower(ref_name);
+    let find_by_exact_name = |name: &str| -> Option<String> {
+        let target = strip_ext_lower(name);
         library
             .iter()
             .find(|e| strip_ext_lower(&e.name) == target)
             .map(|e| library_out_dir.join(&e.png_rel).to_string_lossy().replace('\\', "/"))
+    };
+    // A "_Ghost" (spectral/translucent item variant) material has no texture of its own — the
+    // real game tints the BASE texture via a material property at runtime instead of baking a
+    // separate image (confirmed on real data: "Ani_Hero_Helmet_Titanlord_01_Diffuse_S1_Ghost"
+    // has no matching library entry, but the non-Ghost "...Diffuse_S1" does). Fall back to the
+    // base name before giving up, so Ghost variants get the same real texture the base item
+    // has instead of silently rendering untextured.
+    let find_real_path = |ref_name: &str| -> Option<String> {
+        find_by_exact_name(ref_name).or_else(|| ref_name.strip_suffix("_Ghost").and_then(find_by_exact_name))
     };
 
     let mut out = String::with_capacity(mtl_text.len());
@@ -1223,6 +1232,51 @@ mod tests {
         let mtl_text = fs::read_to_string(out_dir.join("sword.mtl")).unwrap();
         assert_eq!(mtl_text.matches("map_Kd").count(), 1);
         assert!(mtl_text.contains("map_Kd Blade_Diffuse_01.tga"));
+
+        fs::remove_dir_all(&out_dir).ok();
+        fs::remove_dir_all(&library_dir).ok();
+    }
+
+    #[test]
+    fn embed_real_texture_paths_falls_back_to_the_base_texture_for_a_ghost_variant() {
+        // Real bug found live: "It_Helmet_TitanLord_Ghost" rendered blank/white because its
+        // material is named "..._Diffuse_S1_Ghost" and no texture file has that exact name —
+        // only the non-Ghost base item's texture exists. Ghost variants are a real, tinted-at-
+        // runtime reuse of the base texture, not a missing asset.
+        let out_dir = temp_dir("embed_paths_ghost");
+        let library_dir = temp_dir("embed_paths_ghost_library");
+
+        let mut manifest = fs::File::create(library_dir.join(MANIFEST_NAME)).unwrap();
+        write_manifest_line(
+            &mut manifest,
+            &ManifestEntry {
+                archive: PathBuf::from("C:/Game/data/compiled/images.pak"),
+                group: "compiled".to_string(),
+                entry_path: "/Animation/Heads/Ani_Hero_Helmet_Titanlord_01_Diffuse_S1._ximg".to_string(),
+                png_rel: "compiled/images/Animation/Heads/Ani_Hero_Helmet_Titanlord_01_Diffuse_S1.png".to_string(),
+                hash: 0,
+            },
+        )
+        .unwrap();
+        drop(manifest);
+        let png_path = library_dir.join("compiled/images/Animation/Heads/Ani_Hero_Helmet_Titanlord_01_Diffuse_S1.png");
+        fs::create_dir_all(png_path.parent().unwrap()).unwrap();
+        fs::write(&png_path, b"fake png bytes").unwrap();
+
+        let obj_path = out_dir.join("helmet_ghost.obj");
+        fs::write(
+            out_dir.join("helmet_ghost.mtl"),
+            "newmtl Ani_Hero_Helmet_Titanlord_01_Diffuse_S1_Ghost\r\n\r\n",
+        )
+        .unwrap();
+
+        let added = embed_real_texture_paths(&obj_path, &library_dir).unwrap();
+        assert_eq!(added, 1, "should fall back to the base (non-Ghost) texture");
+        let mtl_text = fs::read_to_string(out_dir.join("helmet_ghost.mtl")).unwrap();
+        assert!(
+            mtl_text.contains("map_Kd") && mtl_text.contains("Ani_Hero_Helmet_Titanlord_01_Diffuse_S1.png"),
+            "expected the base texture's real path, got:\n{mtl_text}"
+        );
 
         fs::remove_dir_all(&out_dir).ok();
         fs::remove_dir_all(&library_dir).ok();

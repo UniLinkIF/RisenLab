@@ -154,6 +154,15 @@ describe("findTextureByBaseName", () => {
   it("returns null when nothing matches", () => {
     expect(findTextureByBaseName(entries, "SomethingElse.tga")).toBeNull();
   });
+
+  it("falls back to the base texture for a _Ghost variant reference", () => {
+    const match = findTextureByBaseName(entries, "ItWpn_SwordBlades_01_Diffuse_01_Ghost.tga");
+    expect(match?.name).toBe("ItWpn_SwordBlades_01_Diffuse_01._ximg");
+  });
+
+  it("still returns null for a _Ghost reference whose base texture also doesn't exist", () => {
+    expect(findTextureByBaseName(entries, "SomethingElse_Ghost.tga")).toBeNull();
+  });
 });
 
 describe("isFlat2DOnly", () => {

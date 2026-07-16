@@ -25,14 +25,26 @@ export interface TreeEntry {
  * already points at (see `meshTextureRefs`/`actorTextureRefs`) instead of asking the user to
  * pick one by hand. The reference name comes from the game's original dev-time material data
  * (e.g. "..._Diffuse_01.tga") while the real library entry is the runtime `._ximg` (e.g.
- * "..._Diffuse_01._ximg") — different extensions, same base name, so that's what's compared. */
+ * "..._Diffuse_01._ximg") — different extensions, same base name, so that's what's compared.
+ *
+ * Falls back to the base name for a "_Ghost" (spectral/translucent item variant) reference —
+ * real bug found live: "It_Helmet_TitanLord_Ghost"'s material is named
+ * "..._Diffuse_S1_Ghost", but no texture file has that exact name; only the non-Ghost base
+ * item's texture exists (the real game tints it via a material property at runtime instead of
+ * baking a separate image). Same fallback as `batch::embed_real_texture_paths` on the Rust
+ * side — keep both in sync if this list grows. */
 export function findTextureByBaseName<T extends { name: string }>(entries: T[], refName: string): T | null {
   const stripExt = (n: string) => {
     const dot = n.lastIndexOf(".");
     return (dot === -1 ? n : n.slice(0, dot)).toLowerCase();
   };
   const target = stripExt(refName);
-  return entries.find((e) => stripExt(e.name) === target) ?? null;
+  const exact = entries.find((e) => stripExt(e.name) === target);
+  if (exact) return exact;
+  if (target.endsWith("_ghost")) {
+    return findTextureByBaseName(entries, target.slice(0, -"_ghost".length));
+  }
+  return null;
 }
 
 /** Splits a folder path into its segments, tolerating a leading/trailing "/" (real archive
