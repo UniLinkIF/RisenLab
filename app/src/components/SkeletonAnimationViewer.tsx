@@ -3,7 +3,27 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
+import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
 import type { BoneMotion, SkeletonNode, SkinnedMeshData } from "../lib/types";
+
+/** See the matching helper in Model3DViewer.tsx: Genome's normal maps are DXT5-compressed
+ * with X/Y swizzled into green/alpha (Z dropped entirely), which three.js has no idea about —
+ * left unpacked, every actor with a normal map self-shadowed into a near-black silhouette. */
+function unswizzleNormalTexture(tex: THREE.Texture): void {
+  const image = tex.image as HTMLImageElement;
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || image.width;
+  canvas.height = image.naturalHeight || image.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.drawImage(image, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  if (!looksDxt5nmSwizzled(imageData.data)) return;
+  reconstructTangentNormalMap(imageData.data);
+  ctx.putImageData(imageData, 0, 0);
+  tex.image = canvas;
+  tex.needsUpdate = true;
+}
 
 interface Props {
   nodes: SkeletonNode[];
@@ -180,6 +200,7 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
         normalUrl,
         (tex) => {
           tex.flipY = false;
+          unswizzleNormalTexture(tex);
           material.normalMap = tex;
           material.needsUpdate = true;
         },

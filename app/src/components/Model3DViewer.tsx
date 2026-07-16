@@ -3,6 +3,29 @@ import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
+import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
+
+/** Genome's normal maps are DXT5-compressed with the X/Y components swizzled into the green
+ * and alpha channels (see lib/normalMap.ts) — three.js has no idea about this and reads R/G/B
+ * directly as (X,Y,Z), which decoded every real normal map in this game as a near-uniform
+ * grazing-angle tilt (confirmed: a "textured" axe rendered as a near-black silhouette; disabling
+ * its normal map alone revealed the correct diffuse detail was there all along). Unswizzle via
+ * an offscreen canvas before handing the texture to three.js so the lighting response is real. */
+function unswizzleNormalTexture(tex: THREE.Texture): void {
+  const image = tex.image as HTMLImageElement;
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || image.width;
+  canvas.height = image.naturalHeight || image.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.drawImage(image, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  if (!looksDxt5nmSwizzled(imageData.data)) return;
+  reconstructTangentNormalMap(imageData.data);
+  ctx.putImageData(imageData, 0, 0);
+  tex.image = canvas;
+  tex.needsUpdate = true;
+}
 
 export type ViewMode = "textured" | "wireframe" | "clay" | "normalMap";
 
@@ -106,16 +129,12 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
           diffuseUrl,
           (tex) => {
             tex.colorSpace = THREE.SRGBColorSpace;
-            // Real UV data comes straight from the game's own mesh bytes (Piranha Bytes'
-            // Genome engine, a D3D-era engine using a top-left-origin V convention) via
-            // mimicry-helper's OBJ writer — it is not re-flipped to match OpenGL/WebGL's
-            // bottom-left convention on the way out. three.js's TextureLoader defaults
-            // `flipY = true` to match that GL convention, which — combined with UVs that were
-            // never flipped to begin with — doubles up into a full vertical mirror of every
-            // texture on every model (confirmed live: a texture atlas region meant for the hips
-            // ended up rendering on the head). Disable it so the real, unflipped UVs are used
-            // as-is, matching what the game engine itself actually samples.
-            tex.flipY = false;
+            // These meshes now come from a real, verified-correct .obj (Risenaut's own
+            // xmsh->obj export, opened successfully in Rimy3D by the owner) rather than an
+            // unflipped mimicry-helper export — its UVs follow the standard OBJ (bottom-left
+            // origin) convention, so three.js's default `flipY = true` is the correct match
+            // (confirmed live A/B against Rimy3D's own render of the same real .obj/.mtl/.png).
+            tex.flipY = true;
             material.map = tex;
             material.needsUpdate = true;
             requestRender();
@@ -128,7 +147,8 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
         textureLoader.load(
           normalUrl,
           (tex) => {
-            tex.flipY = false;
+            tex.flipY = true;
+            unswizzleNormalTexture(tex);
             material.normalMap = tex;
             material.needsUpdate = true;
             requestRender();
@@ -141,7 +161,7 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode }: P
         textureLoader.load(
           normalUrl,
           (tex) => {
-            tex.flipY = false;
+            tex.flipY = true;
             material.map = tex;
             material.needsUpdate = true;
             requestRender();
