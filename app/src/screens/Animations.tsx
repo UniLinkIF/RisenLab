@@ -82,6 +82,10 @@ export default function Animations({ lang }: Props) {
   // `xmot::smooth_tracks`, the same code `smooth-motion` writes real files with — so what
   // this previews is exactly what an export would contain).
   const [smoothStrength, setSmoothStrength] = useState(0);
+  // A/B compare (owner request): original tracks are always kept alongside the smoothed set,
+  // so flipping between them is instant — same clip, same viewer, only the keyframes differ.
+  const [originalTracks, setOriginalTracks] = useState<BoneMotion[] | null>(null);
+  const [abOriginal, setAbOriginal] = useState(false);
   const [exportingPatch, setExportingPatch] = useState(false);
   const [patchMessage, setPatchMessage] = useState<string | null>(null);
 
@@ -350,14 +354,18 @@ export default function Animations({ lang }: Props) {
     let cancelled = false;
     setTracksLoading(true);
     setPlaying(true);
-    motionTracks(
-      selectedMotion.archivePath,
-      selectedMotion.entryPath,
-      skeletonNodes.map((n) => n.name),
-      smoothStrength,
-    )
-      .then((tracks) => {
-        if (!cancelled) setMotionTracksData(tracks);
+    setAbOriginal(false);
+    const names = skeletonNodes.map((n) => n.name);
+    Promise.all([
+      motionTracks(selectedMotion.archivePath, selectedMotion.entryPath, names, 0),
+      smoothStrength > 0
+        ? motionTracks(selectedMotion.archivePath, selectedMotion.entryPath, names, smoothStrength)
+        : Promise.resolve(null),
+    ])
+      .then(([orig, smoothed]) => {
+        if (cancelled) return;
+        setOriginalTracks(orig);
+        setMotionTracksData(smoothed ?? orig);
       })
       .catch(() => {
         if (!cancelled) setMotionTracksData(null);
@@ -554,6 +562,26 @@ export default function Animations({ lang }: Props) {
                 {lang === "uk" ? `💾 Всі кліпи (${visibleMotions.length})` : `💾 All clips (${visibleMotions.length})`}
               </button>
             ) : null}
+            {smoothStrength > 0 ? (
+              <button
+                onClick={() => setAbOriginal((v) => !v)}
+                title={
+                  lang === "uk"
+                    ? "Миттєве перемикання між оригінальним кліпом і згладженим — той самий момент часу, ті самі кістки."
+                    : "Instant flip between the original clip and the smoothed one — same viewer, only keyframes differ."
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 12,
+                  background: abOriginal ? "var(--red)" : "var(--bg2)",
+                  border: `1px solid ${abOriginal ? "var(--red)" : "var(--border)"}`,
+                  font: "600 11px system-ui",
+                  color: abOriginal ? "#fff" : "var(--text-dim)",
+                }}
+              >
+                {abOriginal ? (lang === "uk" ? "👁 Оригінал" : "👁 Original") : lang === "uk" ? "A/B" : "A/B"}
+              </button>
+            ) : null}
           </div>
         ) : (
           <div
@@ -654,7 +682,7 @@ export default function Animations({ lang }: Props) {
             <SkeletonAnimationViewer
               key={`${selectedActor.entryPath}::${selectedMotion.entryPath}`}
               nodes={skeletonNodes}
-              tracks={motionTracksData}
+              tracks={abOriginal && originalTracks ? originalTracks : motionTracksData}
               playing={playing}
               showSkeleton={showSkeleton}
               mirrorSkeleton={mirrorSkeleton}
