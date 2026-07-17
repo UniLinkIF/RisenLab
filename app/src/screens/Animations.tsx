@@ -86,6 +86,9 @@ export default function Animations({ lang }: Props) {
   // so flipping between them is instant — same clip, same viewer, only the keyframes differ.
   const [originalTracks, setOriginalTracks] = useState<BoneMotion[] | null>(null);
   const [abOriginal, setAbOriginal] = useState(false);
+  // Side-by-side compare (owner request): both animations playing at once — left original,
+  // right smoothed. Mounted together so their clocks start in sync; play/pause is shared.
+  const [sideBySide, setSideBySide] = useState(false);
   const [exportingPatch, setExportingPatch] = useState(false);
   const [patchMessage, setPatchMessage] = useState<string | null>(null);
 
@@ -582,6 +585,26 @@ export default function Animations({ lang }: Props) {
                 {abOriginal ? (lang === "uk" ? "👁 Оригінал" : "👁 Original") : lang === "uk" ? "A/B" : "A/B"}
               </button>
             ) : null}
+            {smoothStrength > 0 ? (
+              <button
+                onClick={() => setSideBySide((v) => !v)}
+                title={
+                  lang === "uk"
+                    ? "Дві анімації одночасно: зліва оригінал, справа згладжена (спільні пауза/грати)."
+                    : "Both animations at once: original left, smoothed right (shared play/pause)."
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 12,
+                  background: sideBySide ? "var(--accent)" : "var(--bg2)",
+                  border: `1px solid ${sideBySide ? "var(--accent)" : "var(--border)"}`,
+                  font: "600 11px system-ui",
+                  color: sideBySide ? "#fff" : "var(--text-dim)",
+                }}
+              >
+                {lang === "uk" ? "⿻ Поруч" : "⿻ Side by side"}
+              </button>
+            ) : null}
           </div>
         ) : (
           <div
@@ -677,6 +700,33 @@ export default function Animations({ lang }: Props) {
           {!selectedActor ? (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
               {lang === "uk" ? "Оберіть персонажа зліва" : "Select a character on the left"}
+            </div>
+          ) : selectedMotion && motionTracksData && sideBySide && originalTracks && smoothStrength > 0 ? (
+            <div style={{ height: "100%", display: "flex", gap: 2 }}>
+              {([
+                [lang === "uk" ? "Оригінал" : "Original", originalTracks, "var(--text-faint)"],
+                [lang === "uk" ? `Згладжена (${smoothStrength})` : `Smoothed (${smoothStrength})`, motionTracksData, "var(--accent)"],
+              ] as [string, BoneMotion[], string][]).map(([label, tracks, color], i) => (
+                <div key={i} style={{ flex: 1, position: "relative", minWidth: 0, borderLeft: i === 1 ? "1px solid var(--border)" : "none" }}>
+                  <SkeletonAnimationViewer
+                    key={`${selectedActor.entryPath}::${selectedMotion.entryPath}::sxs${i}`}
+                    nodes={skeletonNodes}
+                    tracks={tracks}
+                    playing={playing}
+                    showSkeleton={showSkeleton}
+                    mirrorSkeleton={mirrorSkeleton}
+                    mirrorMesh={mirrorMesh}
+                    skinnedMesh={skinnedMeshData}
+                    objUrl={objUrl}
+                    diffuseUrl={diffuseUrl}
+                    normalUrl={normalUrl}
+                    resolveTexture={resolveTexture}
+                  />
+                  <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none", borderColor: color }}>
+                    {label}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : selectedMotion && motionTracksData ? (
             <SkeletonAnimationViewer
