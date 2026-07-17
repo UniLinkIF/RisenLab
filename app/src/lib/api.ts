@@ -201,7 +201,8 @@ export async function textureMeta(archivePath: string, entryPath: string): Promi
   );
 }
 
-export async function regenerateTexture(pngRel: string, scale = 2): Promise<void> {
+/** scale 0 = smart auto (Rust side): ≤256px textures get 4x, larger get 2x. */
+export async function regenerateTexture(pngRel: string, scale = 0): Promise<void> {
   editedUrlCache.delete(pngRel); // the variant just changed — force a fresh read next time
   if (isTauri()) return invoke("regenerate_texture", { pngRel, scale });
   const settings = await getSettings();

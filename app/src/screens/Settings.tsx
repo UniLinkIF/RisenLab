@@ -250,6 +250,20 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               onChange={(e) => persist({ ...settings, aiModel: e.target.value.trim() || null })}
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
             />
+            <button
+              onClick={() => persist({ ...settings, aiModel: null })}
+              title={lang === "uk" ? "real-esrgan: точне збільшення, кольори/розкладка недоторкані — безпечний дефолт" : "real-esrgan: faithful upscale, colors/layout untouched — the safe default"}
+              style={{ padding: "8px 12px", borderRadius: 8, background: !settings.aiModel ? "var(--accent)" : "var(--bg2)", border: `1px solid ${!settings.aiModel ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: !settings.aiModel ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
+            >
+              {lang === "uk" ? "Точний" : "Faithful"}
+            </button>
+            <button
+              onClick={() => persist({ ...settings, aiModel: "stability-ai/sdxl" })}
+              title={lang === "uk" ? "SDXL img2img з промптами за категорією текстури — більше нових деталей, більший ризик відхилень; все одно проходить рев'ю" : "SDXL img2img with per-category prompts — richer new detail, higher drift risk; still goes through review"}
+              style={{ padding: "8px 12px", borderRadius: 8, background: settings.aiModel === "stability-ai/sdxl" ? "var(--accent)" : "var(--bg2)", border: `1px solid ${settings.aiModel === "stability-ai/sdxl" ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: settings.aiModel === "stability-ai/sdxl" ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
+            >
+              {lang === "uk" ? "Художній" : "Artistic"}
+            </button>
           </div>
           <div style={{ font: "500 11px system-ui", color: "var(--text-faint)", marginTop: 8, lineHeight: 1.5 }}>
             {lang === "uk"

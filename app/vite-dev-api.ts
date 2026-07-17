@@ -391,7 +391,7 @@ export function risenlabDevApi(): Plugin {
           }
           if (url.pathname === "/api/regenerate" && req.method === "POST") {
             const { outputDir, pngRel, scale } = await readJsonBody(req);
-            await runCli(["regenerate", outputDir, pngRel, String(scale ?? 2)]);
+            await runCli(["regenerate", outputDir, pngRel, String(scale ?? 0)]);
             return sendJson(res, 200, { ok: true });
           }
           if (url.pathname === "/api/review-queue" && req.method === "GET") {

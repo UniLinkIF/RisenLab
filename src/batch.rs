@@ -975,6 +975,20 @@ pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32, engine: RegenEngine
         fs::create_dir_all(parent)?;
     }
 
+    // scale 0 = smart auto: small textures (the game is full of 64–256px item/detail maps)
+    // gain the most from a 4x upscale, while 512+ atlases double to a comfortable 1–2k
+    // without exploding VRAM/patch size.
+    let scale = if scale == 0 {
+        let (w, h) = image::image_dimensions(&src).with_context(|| format!("reading dimensions of {}", src.display()))?;
+        if w.max(h) <= 256 {
+            4
+        } else {
+            2
+        }
+    } else {
+        scale
+    };
+
     let want_ai = match engine {
         RegenEngine::Lanczos => false,
         // AI models are trained on photos; normal/specular maps encode vectors, not colors —
@@ -1550,18 +1564,30 @@ mod tests {
         fs::remove_dir_all(&out_dir).ok();
     }
 
+    /// scale 0 = smart auto: small textures (≤256px, the game's many item/detail maps) get
+    /// 4x — they gain the most; larger atlases get 2x to keep patch/VRAM size sane.
     #[test]
-    fn regenerate_treats_scale_zero_as_scale_one() {
+    fn regenerate_scale_zero_is_smart_auto_4x_small_2x_large() {
         let out_dir = temp_dir("regenerate_scale0");
-        let png_rel = "img.png";
-        let src = out_dir.join(png_rel);
-        image::RgbaImage::from_pixel(5, 5, image::Rgba([1, 2, 3, 255]))
-            .save(&src)
+        let small_rel = "small.png";
+        image::RgbaImage::from_pixel(64, 32, image::Rgba([1, 2, 3, 255]))
+            .save(out_dir.join(small_rel))
+            .unwrap();
+        let large_rel = "large.png";
+        image::RgbaImage::from_pixel(300, 100, image::Rgba([1, 2, 3, 255]))
+            .save(out_dir.join(large_rel))
             .unwrap();
 
-        let dest = regenerate(&out_dir, png_rel, 0, RegenEngine::Lanczos).unwrap();
-        let decoded = image::ImageReader::open(&dest).unwrap().decode().unwrap();
-        assert_eq!((decoded.width(), decoded.height()), (5, 5));
+        let small = image::ImageReader::open(regenerate(&out_dir, small_rel, 0, RegenEngine::Lanczos).unwrap())
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!((small.width(), small.height()), (256, 128), "≤256px → 4x");
+        let large = image::ImageReader::open(regenerate(&out_dir, large_rel, 0, RegenEngine::Lanczos).unwrap())
+            .unwrap()
+            .decode()
+            .unwrap();
+        assert_eq!((large.width(), large.height()), (600, 200), ">256px → 2x");
 
         fs::remove_dir_all(&out_dir).ok();
     }

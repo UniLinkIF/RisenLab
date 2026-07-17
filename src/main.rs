@@ -202,7 +202,8 @@ enum Commands {
     Regenerate {
         out_dir: PathBuf,
         png_rel: String,
-        #[arg(default_value_t = 2)]
+        /// 0 = smart auto (≤256px → 4x, larger → 2x)
+        #[arg(default_value_t = 0)]
         scale: u32,
         /// auto | lanczos | ai
         #[arg(default_value = "auto")]
