@@ -240,6 +240,22 @@ export async function uninstallPatches(): Promise<string[]> {
   return api<string[]>("uninstall-patches", { method: "POST" });
 }
 
+/** Smooths MANY clips (e.g. every animation of one creature) into a SINGLE `.pNN` patch
+ * volume. Returns the patch path plus per-clip failures (skipped, not fatal). */
+export async function exportMotionPatchBatch(
+  archivePath: string,
+  entryPaths: string[],
+  boneNames: string[],
+  strength: number,
+): Promise<{ patch: string; failed: string[] }> {
+  if (isTauri()) return invoke<{ patch: string; failed: string[] }>("export_motion_patch_batch", { archivePath, entryPaths, boneNames, strength });
+  return api<{ patch: string; failed: string[] }>("export-motion-patch-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archivePath, entryPaths, boneNames, strength }),
+  });
+}
+
 /** Smooths one clip and packs it straight into a fresh animations `.pNN` patch volume —
  * returns the patch file path (install with `installPatches`). */
 export async function exportMotionPatch(

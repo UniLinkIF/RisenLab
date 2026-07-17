@@ -585,6 +585,42 @@ pub fn uninstall_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec
     Ok(removed)
 }
 
+/// Batch counterpart of `export_motion_patch`: smooths MANY clips (typically every animation
+/// of one creature — they share the actor's skeleton, so one bone-name list fits all) and
+/// packs them into a SINGLE `<stem>.pNN` patch volume. Clips that fail to parse are skipped
+/// (returned in the error list) rather than aborting the whole creature.
+pub fn export_motion_patch_batch(
+    archive_path: &Path,
+    entry_paths: &[String],
+    bone_names: &[String],
+    strength: f32,
+    patch_dir: &Path,
+    group: &str,
+) -> Result<(PathBuf, Vec<String>)> {
+    let stage_dir = patch_dir.join("_motion_stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    let mut failed = Vec::new();
+    let mut staged_any = false;
+    for entry_path in entry_paths {
+        let staged = stage_dir.join(entry_path.trim_start_matches('/'));
+        match smooth_motion_to_file(archive_path, entry_path, bone_names, strength, &staged) {
+            Ok(()) => staged_any = true,
+            Err(e) => failed.push(format!("{entry_path}: {e:#}")),
+        }
+    }
+    if !staged_any {
+        let _ = fs::remove_dir_all(&stage_dir);
+        bail!("no clips could be smoothed ({} failures)", failed.len());
+    }
+    let patch_path = next_patch_path(archive_path, patch_dir, group)?;
+    if let Some(parent) = patch_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    pak::write_archive_from_dir_with(&stage_dir, &patch_path, pak::FileCompression::ZLib)?;
+    let _ = fs::remove_dir_all(&stage_dir);
+    Ok((patch_path, failed))
+}
+
 /// The complete "enhance this animation → installable mod file" chain: smooths one clip
 /// (`smooth_motion_to_file`), stages it under its real entry path, and packs a fresh
 /// `<stem>.pNN` patch volume into `patch_dir/<group>/` using the source archive family's own

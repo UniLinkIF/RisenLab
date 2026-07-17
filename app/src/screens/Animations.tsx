@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import type { ActorEntry, BoneMotion, LibraryEntry, MotionEntry, SkeletonNode, SkinnedMeshData } from "../lib/types";
-import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, exportMotionPatch, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
+import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, exportMotionPatch, exportMotionPatchBatch, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import { getActorOrientation, setActorOrientation } from "../lib/actorOrientation";
@@ -84,6 +84,33 @@ export default function Animations({ lang }: Props) {
   const [smoothStrength, setSmoothStrength] = useState(0);
   const [exportingPatch, setExportingPatch] = useState(false);
   const [patchMessage, setPatchMessage] = useState<string | null>(null);
+
+  // Batch export: every clip the motion list currently shows (creature pre-filter + search +
+  // category chips) at the previewed strength — one creature's whole animation set → ONE patch.
+  async function handleExportMotionPatchBatch() {
+    if (visibleMotions.length === 0 || skeletonNodes.length === 0 || smoothStrength <= 0) return;
+    setExportingPatch(true);
+    setPatchMessage(null);
+    try {
+      const { patch, failed } = await exportMotionPatchBatch(
+        visibleMotions[0].archivePath,
+        visibleMotions.map((m) => m.entryPath),
+        skeletonNodes.map((n) => n.name),
+        smoothStrength,
+      );
+      setPatchMessage(
+        (lang === "uk" ? `Патч зібрано (${visibleMotions.length - failed.length} кліпів` : `Patch built (${visibleMotions.length - failed.length} clips`) +
+          (failed.length ? (lang === "uk" ? `, ${failed.length} пропущено` : `, ${failed.length} skipped`) : "") +
+          "): " +
+          patch +
+          (lang === "uk" ? " — встанови в гру в Налаштуваннях (🎮)" : " — install via Settings (🎮)"),
+      );
+    } catch (e) {
+      setPatchMessage(String(e));
+    } finally {
+      setExportingPatch(false);
+    }
+  }
 
   async function handleExportMotionPatch() {
     if (!selectedMotion || skeletonNodes.length === 0 || smoothStrength <= 0) return;
@@ -503,6 +530,28 @@ export default function Animations({ lang }: Props) {
                 }}
               >
                 {exportingPatch ? (lang === "uk" ? "Збирання…" : "Building…") : lang === "uk" ? "💾 У патч" : "💾 To patch"}
+              </button>
+            ) : null}
+            {smoothStrength > 0 && visibleMotions.length > 1 ? (
+              <button
+                onClick={handleExportMotionPatchBatch}
+                disabled={exportingPatch}
+                title={
+                  lang === "uk"
+                    ? "Згладити ВСІ кліпи з поточного списку знизу (фільтр істоти + пошук + категорія) і зібрати їх ОДНИМ патч-томом."
+                    : "Smooth EVERY clip in the current list below (creature filter + search + category) and pack them as ONE patch volume."
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 12,
+                  background: "var(--bg2)",
+                  border: "1px solid var(--accent)",
+                  font: "600 11px system-ui",
+                  color: exportingPatch ? "var(--text-faint)" : "var(--text)",
+                  cursor: exportingPatch ? "wait" : "pointer",
+                }}
+              >
+                {lang === "uk" ? `💾 Всі кліпи (${visibleMotions.length})` : `💾 All clips (${visibleMotions.length})`}
               </button>
             ) : null}
           </div>

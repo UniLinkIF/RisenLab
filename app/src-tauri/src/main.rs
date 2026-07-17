@@ -378,6 +378,26 @@ fn export_motion_patch(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+struct MotionPatchBatchResult {
+    patch: String,
+    failed: Vec<String>,
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn export_motion_patch_batch(
+    state: State<AppState>,
+    archive_path: String,
+    entry_paths: Vec<String>,
+    bone_names: Vec<String>,
+    strength: f32,
+) -> Result<MotionPatchBatchResult, String> {
+    let patch_dir = PathBuf::from(state.settings.lock().unwrap().patch_dir.clone());
+    batch::export_motion_patch_batch(&PathBuf::from(archive_path), &entry_paths, &bone_names, strength, &patch_dir, "compiled")
+        .map(|(p, failed)| MotionPatchBatchResult { patch: p.to_string_lossy().into_owned(), failed })
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -419,6 +439,7 @@ fn main() {
             install_patches,
             uninstall_patches,
             export_motion_patch,
+            export_motion_patch_batch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RisenLab UI");

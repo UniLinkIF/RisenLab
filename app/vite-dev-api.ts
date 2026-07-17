@@ -439,6 +439,19 @@ export function risenlabDevApi(): Plugin {
             const written = [...stdout.matchAll(/^\s*(.+\.p\d+)\s*$/gm)].map((m) => m[1].trim());
             return sendJson(res, 200, written);
           }
+          if (url.pathname === "/api/export-motion-patch-batch" && req.method === "POST") {
+            const { archivePath, entryPaths, boneNames, strength } = await readJsonBody(req);
+            const settings = await loadSettings();
+            const { stdout } = await runCli([
+              "export-motion-patch-batch",
+              archivePath,
+              JSON.stringify(entryPaths),
+              JSON.stringify(boneNames),
+              String(strength),
+              settings.patchDir,
+            ]);
+            return sendJson(res, 200, JSON.parse(stdout));
+          }
           if (url.pathname === "/api/install-patches" && req.method === "POST") {
             const settings = await loadSettings();
             if (!settings.gameExe) return sendJson(res, 400, { error: "gameExe not configured" });

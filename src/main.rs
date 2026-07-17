@@ -165,6 +165,17 @@ enum Commands {
         #[arg(default_value = "compiled")]
         group: String,
     },
+    /// Smooths MANY clips (entries_json = JSON array of entry paths, e.g. every animation of
+    /// one creature) into a SINGLE `<stem>.pNN` patch volume. Prints `{patch, failed[]}`.
+    ExportMotionPatchBatch {
+        archive: PathBuf,
+        entries_json: String,
+        bone_names_json: String,
+        strength: f32,
+        patch_dir: PathBuf,
+        #[arg(default_value = "compiled")]
+        group: String,
+    },
     /// Copies every built patch volume from `patch_dir` (`<group>/<archive>.pNN`) into the
     /// game's own `data/<group>/` directories — the "install my mod" step. Prints what was
     /// installed as JSON.
@@ -450,6 +461,23 @@ fn main() -> anyhow::Result<()> {
             let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
             let patch = batch::export_motion_patch(&archive, &entry_path, &bone_names, strength, &patch_dir, &group)?;
             println!("{}", serde_json::to_string(&patch.to_string_lossy())?);
+        }
+        Commands::ExportMotionPatchBatch {
+            archive,
+            entries_json,
+            bone_names_json,
+            strength,
+            patch_dir,
+            group,
+        } => {
+            let entries: Vec<String> = serde_json::from_str(&entries_json)?;
+            let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
+            let (patch, failed) =
+                batch::export_motion_patch_batch(&archive, &entries, &bone_names, strength, &patch_dir, &group)?;
+            println!(
+                "{}",
+                serde_json::json!({ "patch": patch.to_string_lossy(), "failed": failed })
+            );
         }
         Commands::InstallPatches { game, patch_dir } => {
             let installed = batch::install_patches(&game, &patch_dir)?;
