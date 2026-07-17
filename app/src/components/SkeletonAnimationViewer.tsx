@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
 import { groupFacesByMaterial } from "../lib/materials";
@@ -146,6 +147,13 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     scene.background = new THREE.Color(0x14161b);
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 5000);
     const renderer = new THREE.WebGLRenderer({ antialias: true, logarithmicDepthBuffer: true });
+    // Same "шейдери" upgrade as Model3DViewer: ACES filmic tone mapping + procedural IBL —
+    // see the matching comment there.
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = 0.55;
     renderer.setPixelRatio(1);
     renderer.domElement.style.display = "block";
     container.appendChild(renderer.domElement);

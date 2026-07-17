@@ -141,9 +141,10 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32)
             "prompt": texture_prompt(png_rel),
             "negative_prompt": "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark",
             "scale_factor": scale.clamp(2, 4),
-            "creativity": 0.3,
-            "resemblance": 1.4,
-            "dynamic": 6,
+            "creativity": 0.45,
+            "resemblance": 1.1,
+            "dynamic": 9,
+            "num_inference_steps": 22,
         });
     }
     if model.to_lowercase().contains("esrgan") {

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
 import { deriveNormalName } from "../lib/materials";
@@ -85,6 +86,15 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
     // depths apart at typical camera distances, so they flicker/interleave (z-fighting). A
     // logarithmic depth buffer gives much finer precision in exactly that near-camera range.
     const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "low-power", logarithmicDepthBuffer: true });
+    // --- "Шейдери" (owner request): filmic tone mapping + image-based lighting ---------
+    // ACES filmic curve stops the washed-out/flat look of raw lighting, and a procedural
+    // RoomEnvironment (generated locally — no external assets) gives MeshStandardMaterial
+    // real reflections/speculars instead of dead matte shading.
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    const pmrem = new THREE.PMREMGenerator(renderer);
+    scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+    scene.environmentIntensity = 0.55;
     renderer.setPixelRatio(1);
     // `display:block` avoids the few extra inline-baseline pixels a bare <canvas> reserves,
     // which — combined with a container sized from its own content — can make the
