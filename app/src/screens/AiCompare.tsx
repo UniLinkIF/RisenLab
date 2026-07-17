@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { queueCount, t } from "../lib/i18n";
 import type { LibraryEntry, ReviewItem } from "../lib/types";
@@ -20,6 +20,16 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
   const [original, setOriginal] = useState<string | null>(null);
   const [variant, setVariant] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Slider-compare divider position (0..1). Driven by pointer drag/click on the container.
+  const [sliderPos, setSliderPos] = useState(0.5);
+  const draggingRef = useRef(false);
+  const sliderBoxRef = useRef<HTMLDivElement | null>(null);
+
+  function moveSlider(clientX: number) {
+    const box = sliderBoxRef.current?.getBoundingClientRect();
+    if (!box || box.width === 0) return;
+    setSliderPos(Math.min(1, Math.max(0, (clientX - box.left) / box.width)));
+  }
 
   async function refreshQueue(preferPngRel?: string | null) {
     const items = await reviewQueue();
@@ -136,22 +146,60 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
         </div>
       ) : (
         <div style={{ flex: 1, padding: "18px 26px", minHeight: 0 }}>
-          <div style={{ position: "relative", height: "100%", borderRadius: 14, overflow: "hidden", border: "1px solid var(--border-strong)" }}>
+          <div
+            ref={sliderBoxRef}
+            onPointerDown={(e) => {
+              draggingRef.current = true;
+              (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+              moveSlider(e.clientX);
+            }}
+            onPointerMove={(e) => {
+              if (draggingRef.current) moveSlider(e.clientX);
+            }}
+            onPointerUp={() => {
+              draggingRef.current = false;
+            }}
+            style={{ position: "relative", height: "100%", borderRadius: 14, overflow: "hidden", border: "1px solid var(--border-strong)", cursor: "ew-resize", touchAction: "none", userSelect: "none" }}
+          >
             <div style={{ position: "absolute", inset: 0, background: variant ? `center / contain no-repeat var(--bg0) url(${variant})` : "var(--bg2)" }} />
+            {/* Full-size layer clipped from the right — both backgrounds scale/center
+                identically, so the two images stay perfectly aligned at any divider position
+                (the old fixed-width layer centered its image differently and never moved —
+                the real "свайп не працює" bug). */}
             <div
               style={{
                 position: "absolute",
                 inset: 0,
-                width: "42%",
-                overflow: "hidden",
                 background: original ? `center / contain no-repeat var(--bg0) url(${original})` : "var(--bg2)",
-                borderRight: "2px solid var(--accent)",
+                clipPath: `inset(0 ${(1 - sliderPos) * 100}% 0 0)`,
               }}
             />
-            <div style={{ position: "absolute", top: 14, left: 14, font: "700 10px system-ui", color: "var(--text-dim)", background: "rgba(0,0,0,.4)", padding: "4px 9px", borderRadius: 6 }}>
+            <div style={{ position: "absolute", top: 0, bottom: 0, left: `calc(${sliderPos * 100}% - 1px)`, width: 2, background: "var(--accent)", pointerEvents: "none" }} />
+            <div
+              style={{
+                position: "absolute",
+                top: "50%",
+                left: `${sliderPos * 100}%`,
+                transform: "translate(-50%, -50%)",
+                width: 26,
+                height: 26,
+                borderRadius: "50%",
+                background: "var(--accent)",
+                color: "#fff",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                font: "700 12px system-ui",
+                pointerEvents: "none",
+                boxShadow: "0 1px 6px rgba(0,0,0,.4)",
+              }}
+            >
+              ⇔
+            </div>
+            <div style={{ position: "absolute", top: 14, left: 14, font: "700 10px system-ui", color: "var(--text-dim)", background: "rgba(0,0,0,.4)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
               {s.original}
             </div>
-            <div style={{ position: "absolute", top: 14, right: 14, font: "700 10px system-ui", color: "#fff", background: "var(--accent)", padding: "4px 9px", borderRadius: 6 }}>
+            <div style={{ position: "absolute", top: 14, right: 14, font: "700 10px system-ui", color: "#fff", background: "var(--accent)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
               {s.variant}
             </div>
           </div>

@@ -9,6 +9,7 @@ import Library from "./screens/Library";
 import Models from "./screens/Models";
 import Animations from "./screens/Animations";
 import AiCompare from "./screens/AiCompare";
+import ErrorLog from "./components/ErrorLog";
 import Settings from "./screens/Settings";
 
 export default function App() {
@@ -46,7 +47,7 @@ export default function App() {
         onLangChange={changeLang}
         connected={screen !== "ai-compare" ? connected : undefined}
       />
-      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+      <div className="screen-host" style={{ flex: 1, display: "flex", minHeight: 0 }}>
         <Sidebar active={screen === "ai-compare" ? "library" : screen} onNavigate={(s) => setScreen(s)} lang={lang} />
         {screen === "dashboard" ? <Dashboard lang={lang} /> : null}
         {screen === "library" ? <Library lang={lang} onRegenerated={handleRegenerated} /> : null}
@@ -57,6 +58,7 @@ export default function App() {
         ) : null}
         {screen === "ai-compare" ? <AiCompare lang={lang} initialPngRel={aiPngRel} /> : null}
       </div>
+      <ErrorLog lang={lang} />
     </div>
   );
 }

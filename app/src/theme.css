@@ -82,3 +82,54 @@ button {
 *::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/* ---- Motion polish (owner request: "плавні переходи і т.д.") -------------------------- */
+
+/* Buttons/inputs everywhere ease their color/border/background changes instead of snapping;
+   transform is included so hover/press micro-motion below is smooth too. */
+button,
+input,
+select {
+  transition:
+    background-color 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    opacity 0.16s ease,
+    transform 0.12s ease,
+    box-shadow 0.16s ease;
+}
+
+button:not(:disabled):hover {
+  filter: brightness(1.12);
+}
+
+button:not(:disabled):active {
+  transform: scale(0.97);
+}
+
+/* Every screen mounts with a soft fade+rise. Screens are conditionally mounted in App.tsx
+   (`{screen === "x" ? <X/> : null}`), so mount = navigation — no wrapper needed. */
+@keyframes screen-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* First child of .screen-host is the Sidebar (persistent); everything after it is the
+   currently mounted screen. */
+.screen-host > *:not(:first-child) {
+  animation: screen-in 0.22s ease both;
+}
+
+/* Respect users who ask the OS for less motion. */
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001s !important;
+    transition-duration: 0.001s !important;
+  }
+}
