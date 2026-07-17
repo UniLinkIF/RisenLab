@@ -26,7 +26,26 @@ export function deriveNormalName(diffuseName: string): string | null {
  * game's `_S1` (highest-detail stage) suffix appended — actor material names reference e.g.
  * "Ani_Monster_Wolf_Body_01_Diffuse" while the real texture file is "..._Diffuse_S1". */
 export function findTextureEntryForBaseName<T extends { name: string }>(entries: T[], baseName: string): T | null {
-  return findTextureByBaseName(entries, baseName) ?? findTextureByBaseName(entries, `${baseName}_S1`);
+  const exact = findTextureByBaseName(entries, baseName) ?? findTextureByBaseName(entries, `${baseName}_S1`);
+  if (exact) return exact;
+  // Last resort — infix drift between actor materials and real files (real case: the Ogre's
+  // materials reference "Ani_Monster_Oger_Cloth_Diffuse_S1" while the game ships
+  // "Ani_Hero_Monster_Oger_Cloth_Diffuse_S1", so the belt fell back to the body texture):
+  // match by the distinctive TAIL of the name (reference minus its first token). Only
+  // accepted when long enough to be unambiguous and exactly one candidate matches — a wrong
+  // texture is worse than the fallback.
+  const stripExt = (n: string) => {
+    const dot = n.lastIndexOf(".");
+    return (dot === -1 ? n : n.slice(0, dot)).toLowerCase();
+  };
+  const target = stripExt(baseName);
+  const tail = target.slice(target.indexOf("_") + 1);
+  if (tail.length < 12 || tail === target) return null;
+  const candidates = entries.filter((e) => {
+    const n = stripExt(e.name);
+    return n.endsWith(tail) || n.endsWith(`${tail}_s1`);
+  });
+  return candidates.length === 1 ? candidates[0] : null;
 }
 
 export interface MaterialGroup {

@@ -74,3 +74,25 @@ describe("groupFacesByMaterial", () => {
     expect(groups.map((g) => g.materialId)).toEqual([0, 2]);
   });
 });
+
+describe("findTextureEntryForBaseName infix drift", () => {
+  it("resolves the real Ogre belt case (actor says Ani_Monster_..., file is Ani_Hero_Monster_...)", () => {
+    const entries = [
+      { name: "Ani_Hero_Monster_Oger_Body_Diffuse_S1._ximg" },
+      { name: "Ani_Hero_Monster_Oger_Cloth_Diffuse_S1._ximg" },
+    ];
+    expect(findTextureEntryForBaseName(entries, "Ani_Monster_Oger_Cloth_Diffuse_S1")?.name).toBe(
+      "Ani_Hero_Monster_Oger_Cloth_Diffuse_S1._ximg",
+    );
+  });
+
+  it("refuses ambiguous or too-short tails", () => {
+    const entries = [
+      { name: "A_Long_Common_Tail_Diffuse_S1._ximg" },
+      { name: "B_Long_Common_Tail_Diffuse_S1._ximg" },
+    ];
+    expect(findTextureEntryForBaseName(entries, "X_Long_Common_Tail_Diffuse_S1")).toBeNull();
+    expect(findTextureEntryForBaseName([{ name: "Whatever._ximg" }], "A_Bc")).toBeNull();
+  });
+});
+
