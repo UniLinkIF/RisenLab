@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
 import type { AppSettings, GameCheckResult } from "../lib/types";
-import { backupProject, buildPatches, checkGame, getSettings, pickFolder, pickGamePath, saveSettings } from "../lib/api";
+import { backupProject, buildPatches, checkGame, getSettings, installPatches, pickFolder, pickGamePath, saveSettings, uninstallPatches } from "../lib/api";
 import { formatBytes } from "../lib/library";
 
 interface Props {
@@ -54,6 +54,38 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
     try {
       const written = await buildPatches();
       setPatchMessage(written.length ? written.join(", ") : lang === "uk" ? "Немає прийнятих текстур" : "No approved textures");
+    } catch (e) {
+      setPatchMessage(String(e));
+    }
+  }
+
+  async function onInstallPatches() {
+    setPatchMessage(null);
+    try {
+      const installed = await installPatches();
+      setPatchMessage(
+        installed.length
+          ? (lang === "uk" ? "Встановлено в гру: " : "Installed into the game: ") + installed.join(", ")
+          : lang === "uk"
+            ? "Немає зібраних патчів (спершу «Зібрати патч»)"
+            : "No built patches (run “Build patch” first)",
+      );
+    } catch (e) {
+      setPatchMessage(String(e));
+    }
+  }
+
+  async function onUninstallPatches() {
+    setPatchMessage(null);
+    try {
+      const removed = await uninstallPatches();
+      setPatchMessage(
+        removed.length
+          ? (lang === "uk" ? "Прибрано з гри: " : "Removed from the game: ") + removed.join(", ")
+          : lang === "uk"
+            ? "У грі немає наших патчів"
+            : "No patches of ours in the game",
+      );
     } catch (e) {
       setPatchMessage(String(e));
     }
@@ -253,11 +285,37 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 0" }}>
             <div style={{ font: "500 12.5px system-ui", color: "var(--text-dim)" }}>{s.buildPatch}</div>
-            <button onClick={onBuildPatch} style={{ padding: "8px 16px", borderRadius: 9, background: "var(--accent)", border: "none", font: "600 12px system-ui", color: "#fff" }}>
-              {s.buildPatch}
-            </button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={onBuildPatch} style={{ padding: "8px 16px", borderRadius: 9, background: "var(--accent)", border: "none", font: "600 12px system-ui", color: "#fff" }}>
+                {s.buildPatch}
+              </button>
+              <button
+                onClick={onInstallPatches}
+                disabled={!settings.gameExe}
+                title={
+                  lang === "uk"
+                    ? "Скопіювати всі зібрані .pXX у теку гри (data/compiled, data/common). Відкат — «Прибрати з гри»."
+                    : "Copy all built .pXX volumes into the game's data folders. Revert with “Remove from game”."
+                }
+                style={{ padding: "8px 16px", borderRadius: 9, background: "var(--bg2)", border: "1px solid var(--accent)", font: "600 12px system-ui", color: "var(--text)", opacity: settings.gameExe ? 1 : 0.5 }}
+              >
+                {lang === "uk" ? "🎮 Встановити в гру" : "🎮 Install into game"}
+              </button>
+              <button
+                onClick={onUninstallPatches}
+                disabled={!settings.gameExe}
+                title={
+                  lang === "uk"
+                    ? "Видалити з теки гри лише файли, що є серед зібраних патчів — більше нічого не чіпається."
+                    : "Delete from the game folder only files that also exist among the built patches — nothing else is touched."
+                }
+                style={{ padding: "8px 16px", borderRadius: 9, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 12px system-ui", color: "var(--text-dim)", opacity: settings.gameExe ? 1 : 0.5 }}
+              >
+                {lang === "uk" ? "Прибрати з гри" : "Remove from game"}
+              </button>
+            </div>
           </div>
-          {patchMessage ? <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-faint)" }}>{patchMessage}</div> : null}
+          {patchMessage ? <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-faint)", wordBreak: "break-all" }}>{patchMessage}</div> : null}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 0" }}>
             <div style={{ font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
               {lang === "uk" ? "Резервна копія проєкту" : "Project backup"}

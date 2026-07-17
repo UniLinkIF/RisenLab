@@ -344,6 +344,40 @@ fn build_patches(state: State<AppState>) -> Result<Vec<String>, String> {
         .collect())
 }
 
+#[tauri::command]
+fn install_patches(state: State<AppState>) -> Result<Vec<String>, String> {
+    let (game_exe, patch_dir) = {
+        let s = state.settings.lock().unwrap();
+        (s.game_exe.clone(), PathBuf::from(s.patch_dir.clone()))
+    };
+    let game_exe = game_exe.ok_or("gameExe not configured")?;
+    batch::install_patches(&PathBuf::from(game_exe), &patch_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn uninstall_patches(state: State<AppState>) -> Result<Vec<String>, String> {
+    let (game_exe, patch_dir) = {
+        let s = state.settings.lock().unwrap();
+        (s.game_exe.clone(), PathBuf::from(s.patch_dir.clone()))
+    };
+    let game_exe = game_exe.ok_or("gameExe not configured")?;
+    batch::uninstall_patches(&PathBuf::from(game_exe), &patch_dir).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn export_motion_patch(
+    state: State<AppState>,
+    archive_path: String,
+    entry_path: String,
+    bone_names: Vec<String>,
+    strength: f32,
+) -> Result<String, String> {
+    let patch_dir = PathBuf::from(state.settings.lock().unwrap().patch_dir.clone());
+    batch::export_motion_patch(&PathBuf::from(archive_path), &entry_path, &bone_names, strength, &patch_dir, "compiled")
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -382,6 +416,9 @@ fn main() {
             review_queue,
             set_review_status,
             build_patches,
+            install_patches,
+            uninstall_patches,
+            export_motion_patch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RisenLab UI");

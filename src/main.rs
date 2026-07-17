@@ -17,8 +17,16 @@ enum Commands {
     List { archive: PathBuf },
     /// Extract every file from a .pak / .pXX archive into a directory
     Unpack { archive: PathBuf, out_dir: PathBuf },
-    /// Build a new .pak / .pXX archive from a directory (for patch volumes)
-    Pack { in_dir: PathBuf, archive: PathBuf },
+    /// Build a new .pak / .pXX archive from a directory (for patch volumes). `compression`
+    /// should match the source archive family's own convention: images.pak = none,
+    /// animations.pak = zlib.
+    Pack {
+        in_dir: PathBuf,
+        archive: PathBuf,
+        /// none | zlib
+        #[arg(default_value = "none")]
+        compression: String,
+    },
     /// Extract the embedded DDS payload from a Risen 1/2 ._ximg texture
     XimgToDds { input: PathBuf, output: PathBuf },
     /// Print ._ximg header info (width/height/offsets)
@@ -145,6 +153,25 @@ enum Commands {
     /// Prints a texture's real width/height/pixel-format/file-size (read from its source
     /// archive entry) as JSON, for the review UI's detail panel.
     TextureMeta { archive: PathBuf, entry_path: String },
+    /// Smooths one clip and packs it straight into a fresh `<stem>.pNN` patch volume under
+    /// `patch_dir/<group>/` (ZLib entries — animations.pak's own convention). Prints the
+    /// patch path.
+    ExportMotionPatch {
+        archive: PathBuf,
+        entry_path: String,
+        bone_names_json: String,
+        strength: f32,
+        patch_dir: PathBuf,
+        #[arg(default_value = "compiled")]
+        group: String,
+    },
+    /// Copies every built patch volume from `patch_dir` (`<group>/<archive>.pNN`) into the
+    /// game's own `data/<group>/` directories — the "install my mod" step. Prints what was
+    /// installed as JSON.
+    InstallPatches { game: PathBuf, patch_dir: PathBuf },
+    /// Removes previously installed patch volumes from the game (only files whose exact name
+    /// exists in `patch_dir` — nothing else is touched). Prints what was removed as JSON.
+    UninstallPatches { game: PathBuf, patch_dir: PathBuf },
     /// Reads one motion clip, low-pass-filters every bone's keyframe tracks ("прибрати
     /// дрижання" — see docs/AI.md), patches the values back IN PLACE (file structure preserved
     /// byte-for-byte) and writes the result. `strength` 0 = byte-identical copy (the built-in
@@ -205,8 +232,13 @@ fn main() -> anyhow::Result<()> {
             let count = a.extract_all(&out_dir)?;
             println!("Extracted {count} files to {}", out_dir.display());
         }
-        Commands::Pack { in_dir, archive } => {
-            pak::write_archive_from_dir(&in_dir, &archive)?;
+        Commands::Pack { in_dir, archive, compression } => {
+            let mode = match compression.to_lowercase().as_str() {
+                "none" => pak::FileCompression::None,
+                "zlib" => pak::FileCompression::ZLib,
+                other => anyhow::bail!("unknown compression '{other}' (expected none|zlib)"),
+            };
+            pak::write_archive_from_dir_with(&in_dir, &archive, mode)?;
             println!("Wrote {}", archive.display());
         }
         Commands::XimgToDds { input, output } => {
@@ -406,6 +438,26 @@ fn main() -> anyhow::Result<()> {
         Commands::ActorSkinnedMesh { archive, entry_path } => {
             let mesh = batch::actor_skinned_mesh(&archive, &entry_path)?;
             println!("{}", serde_json::to_string(&mesh)?);
+        }
+        Commands::ExportMotionPatch {
+            archive,
+            entry_path,
+            bone_names_json,
+            strength,
+            patch_dir,
+            group,
+        } => {
+            let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
+            let patch = batch::export_motion_patch(&archive, &entry_path, &bone_names, strength, &patch_dir, &group)?;
+            println!("{}", serde_json::to_string(&patch.to_string_lossy())?);
+        }
+        Commands::InstallPatches { game, patch_dir } => {
+            let installed = batch::install_patches(&game, &patch_dir)?;
+            println!("{}", serde_json::to_string(&installed)?);
+        }
+        Commands::UninstallPatches { game, patch_dir } => {
+            let removed = batch::uninstall_patches(&game, &patch_dir)?;
+            println!("{}", serde_json::to_string(&removed)?);
         }
         Commands::SmoothMotion {
             archive,

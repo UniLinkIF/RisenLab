@@ -266,11 +266,19 @@ impl PakArchive {
 /// subfolder structure. Intended for producing patch volumes (see docs/p0x-patches.md), not
 /// for editing an existing archive in place.
 pub fn write_archive_from_dir<P: AsRef<Path>>(src_dir: P, out_path: P) -> io::Result<()> {
-    let src_dir = src_dir.as_ref();
+    write_archive_from_dir_with(src_dir.as_ref(), out_path.as_ref(), FileCompression::None)
+}
+
+/// `write_archive_from_dir` with an explicit per-entry compression. Match the SOURCE archive's
+/// own convention when building a patch volume for it: the real `images.pak` stores every
+/// entry uncompressed (header flag 0), while `animations.pak` stores every entry ZLib (header
+/// flag 2) — a patch that differs from what the engine always sees for that volume family is
+/// an avoidable risk.
+pub fn write_archive_from_dir_with(src_dir: &Path, out_path: &Path, compression: FileCompression) -> io::Result<()> {
     let mut file_list = Vec::new();
     collect_files(src_dir, src_dir, &mut file_list)?;
 
-    let mut out = File::create(out_path.as_ref())?;
+    let mut out = File::create(out_path)?;
 
     // Header is written last-fields-known, but DataOffset is always 48 (fixed header size).
     const HEADER_SIZE: u64 = 48;
@@ -278,7 +286,7 @@ pub fn write_archive_from_dir<P: AsRef<Path>>(src_dir: P, out_path: P) -> io::Re
     out.write_all(&0x3056_3347u32.to_le_bytes())?; // "G3V0"
     out.write_all(&0u32.to_le_bytes())?; // revision
     out.write_all(&0u32.to_le_bytes())?; // encryption = none
-    out.write_all(&0u32.to_le_bytes())?; // compression = none (whole-volume flag)
+    out.write_all(&compression.to_u32().to_le_bytes())?; // whole-volume flag (mirrors entries)
     out.write_all(&0u32.to_le_bytes())?; // reserved
     out.write_all(&HEADER_SIZE.to_le_bytes())?; // data_offset
     let root_offset_pos = out.stream_position()?;
@@ -286,18 +294,22 @@ pub fn write_archive_from_dir<P: AsRef<Path>>(src_dir: P, out_path: P) -> io::Re
     let volume_size_pos = out.stream_position()?;
     out.write_all(&0u64.to_le_bytes())?; // volume_size placeholder
 
-    let mut written = Vec::new(); // (relative_path, data_offset, size)
+    let mut written = Vec::new(); // (relative_path, data_offset, stored_size, original_size)
     for rel_path in &file_list {
         let full = src_dir.join(rel_path);
         let data = std::fs::read(&full)?;
+        let stored = match compression {
+            FileCompression::ZLib => zlib_compress(&data)?,
+            _ => data.clone(),
+        };
         let offset = out.stream_position()?;
-        out.write_all(&data)?;
-        written.push((rel_path.clone(), offset, data.len() as u32));
+        out.write_all(&stored)?;
+        written.push((rel_path.clone(), offset, stored.len() as u32, data.len() as u32));
     }
 
     let root_offset = out.stream_position()?;
     let tree = build_write_tree(&written);
-    write_directory_tree(&mut out, &tree)?;
+    write_directory_tree(&mut out, &tree, compression)?;
     let volume_size = out.stream_position()?;
 
     out.seek(SeekFrom::Start(root_offset_pos))?;
@@ -333,28 +345,29 @@ fn write_name<W: Write>(w: &mut W, name: &str) -> io::Result<()> {
 }
 
 /// In-memory shape of the directory tree being written, built from a flat list of
-/// (relative_path, offset, size) by splitting each path on `/`.
+/// (relative_path, offset, stored_size, original_size) by splitting each path on `/`.
 enum WriteNode {
-    File { name: String, offset: u64, size: u32 },
+    File { name: String, offset: u64, stored_size: u32, original_size: u32 },
     Dir { name: String, children: Vec<WriteNode> },
 }
 
-fn build_write_tree(files: &[(String, u64, u32)]) -> Vec<WriteNode> {
+fn build_write_tree(files: &[(String, u64, u32, u32)]) -> Vec<WriteNode> {
     let mut root: Vec<WriteNode> = Vec::new();
-    for (rel_path, offset, size) in files {
+    for (rel_path, offset, stored_size, original_size) in files {
         let parts: Vec<&str> = rel_path.split('/').collect();
-        insert_write_node(&mut root, &parts, *offset, *size);
+        insert_write_node(&mut root, &parts, *offset, *stored_size, *original_size);
     }
     root
 }
 
-fn insert_write_node(nodes: &mut Vec<WriteNode>, parts: &[&str], offset: u64, size: u32) {
+fn insert_write_node(nodes: &mut Vec<WriteNode>, parts: &[&str], offset: u64, stored_size: u32, original_size: u32) {
     match parts {
         [] => {}
         [name] => nodes.push(WriteNode::File {
             name: (*name).to_string(),
             offset,
-            size,
+            stored_size,
+            original_size,
         }),
         [dir_name, rest @ ..] => {
             let idx = nodes
@@ -368,7 +381,7 @@ fn insert_write_node(nodes: &mut Vec<WriteNode>, parts: &[&str], offset: u64, si
                     nodes.len() - 1
                 });
             if let WriteNode::Dir { children, .. } = &mut nodes[idx] {
-                insert_write_node(children, rest, offset, size);
+                insert_write_node(children, rest, offset, stored_size, original_size);
             }
         }
     }
@@ -376,7 +389,7 @@ fn insert_write_node(nodes: &mut Vec<WriteNode>, parts: &[&str], offset: u64, si
 
 /// Writes the root directory record: no leading discriminator (matches how `read_directory`
 /// is invoked at the root), then every child with its own discriminator attributes field.
-fn write_directory_tree<W: Write>(w: &mut W, nodes: &[WriteNode]) -> io::Result<()> {
+fn write_directory_tree<W: Write>(w: &mut W, nodes: &[WriteNode], compression: FileCompression) -> io::Result<()> {
     write_name(w, "")?; // root has no name
     w.write_all(&0u64.to_le_bytes())?; // created
     w.write_all(&0u64.to_le_bytes())?; // accessed
@@ -384,14 +397,14 @@ fn write_directory_tree<W: Write>(w: &mut W, nodes: &[WriteNode]) -> io::Result<
     w.write_all(&DIR_ATTR.to_le_bytes())?; // directory attribute
     w.write_all(&(nodes.len() as u32).to_le_bytes())?; // count
     for node in nodes {
-        write_node(w, node)?;
+        write_node(w, node, compression)?;
     }
     Ok(())
 }
 
-fn write_node<W: Write>(w: &mut W, node: &WriteNode) -> io::Result<()> {
+fn write_node<W: Write>(w: &mut W, node: &WriteNode, compression: FileCompression) -> io::Result<()> {
     match node {
-        WriteNode::File { name, offset, size } => {
+        WriteNode::File { name, offset, stored_size, original_size } => {
             let file_attr = 0x0000_0020u32; // FILE_ATTRIBUTE_ARCHIVE, not a directory
             w.write_all(&file_attr.to_le_bytes())?; // discriminator (no DIR_ATTR bit set)
             write_name(w, name)?;
@@ -401,9 +414,9 @@ fn write_node<W: Write>(w: &mut W, node: &WriteNode) -> io::Result<()> {
             w.write_all(&0u64.to_le_bytes())?; // modified
             w.write_all(&file_attr.to_le_bytes())?; // file_attributes
             w.write_all(&0u32.to_le_bytes())?; // encryption = none
-            w.write_all(&FileCompression::None.to_u32().to_le_bytes())?; // compression = none
-            w.write_all(&size.to_le_bytes())?; // data_size
-            w.write_all(&size.to_le_bytes())?; // file_size
+            w.write_all(&compression.to_u32().to_le_bytes())?;
+            w.write_all(&stored_size.to_le_bytes())?; // data_size (bytes as stored)
+            w.write_all(&original_size.to_le_bytes())?; // file_size (bytes after decompression)
         }
         WriteNode::Dir { name, children } => {
             w.write_all(&DIR_ATTR.to_le_bytes())?; // discriminator
@@ -414,14 +427,13 @@ fn write_node<W: Write>(w: &mut W, node: &WriteNode) -> io::Result<()> {
             w.write_all(&DIR_ATTR.to_le_bytes())?; // file_attributes
             w.write_all(&(children.len() as u32).to_le_bytes())?; // count
             for child in children {
-                write_node(w, child)?;
+                write_node(w, child, compression)?;
             }
         }
     }
     Ok(())
 }
 
-#[allow(dead_code)]
 fn zlib_compress(data: &[u8]) -> io::Result<Vec<u8>> {
     let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
     encoder.write_all(data)?;
@@ -469,6 +481,34 @@ mod tests {
             let data = archive.read_file(entry).unwrap();
             assert_eq!(&data, content, "content mismatch for {expected_path}");
         }
+
+        std::fs::remove_dir_all(&tmp_dir).ok();
+    }
+
+    /// ZLib patch volumes (the real `animations.pak` convention: every entry compressed,
+    /// header flag 2) must round-trip through this crate's own reader: compressed on disk
+    /// (data_size < file_size for compressible content), original bytes after read.
+    #[test]
+    fn write_archive_with_zlib_round_trips() {
+        let tmp_dir = std::env::temp_dir().join(format!("risenlab_pak_zlib_test_{}", std::process::id()));
+        let src_dir = tmp_dir.join("src");
+        std::fs::create_dir_all(src_dir.join("_emfx36").join("Monster")).unwrap();
+        // Highly compressible payload so the compressed-size assertion below is meaningful.
+        let payload = vec![0x41u8; 4096];
+        std::fs::write(src_dir.join("_emfx36").join("Monster").join("Ogre._xmot"), &payload).unwrap();
+
+        let archive_path = tmp_dir.join("animations.p01");
+        write_archive_from_dir_with(&src_dir, &archive_path, FileCompression::ZLib).unwrap();
+
+        let mut archive = PakArchive::open(&archive_path).unwrap();
+        let entries = archive.files();
+        assert_eq!(entries.len(), 1);
+        let entry = &entries[0];
+        assert_eq!(entry.path, "/_emfx36/Monster/Ogre._xmot");
+        assert_eq!(entry.compression, FileCompression::ZLib);
+        assert_eq!(entry.file_size, payload.len() as u32, "file_size = original bytes");
+        assert!(entry.data_size < entry.file_size, "data_size = compressed bytes on disk");
+        assert_eq!(archive.read_file(entry).unwrap(), payload);
 
         std::fs::remove_dir_all(&tmp_dir).ok();
     }

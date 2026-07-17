@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import type { ActorEntry, BoneMotion, LibraryEntry, MotionEntry, SkeletonNode, SkinnedMeshData } from "../lib/types";
-import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
+import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, exportMotionPatch, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import { getActorOrientation, setActorOrientation } from "../lib/actorOrientation";
+import { MOTION_CATEGORIES, motionCategory, type MotionCategory } from "../lib/motionCategory";
 import FolderTree from "../components/FolderTree";
 import Model3DViewer, { type ViewMode } from "../components/Model3DViewer";
 import SkeletonAnimationViewer, { motionDuration } from "../components/SkeletonAnimationViewer";
@@ -58,6 +59,7 @@ export default function Animations({ lang }: Props) {
   const [normalUrl, setNormalUrl] = useState<string | null>(null);
 
   const [motionQuery, setMotionQuery] = useState("");
+  const [motionCategoryFilter, setMotionCategoryFilter] = useState<MotionCategory>("all");
   const [selectedMotion, setSelectedMotion] = useState<MotionEntry | null>(null);
 
   const [mode, setMode] = useState<ViewMode>("textured");
@@ -80,6 +82,31 @@ export default function Animations({ lang }: Props) {
   // `xmot::smooth_tracks`, the same code `smooth-motion` writes real files with — so what
   // this previews is exactly what an export would contain).
   const [smoothStrength, setSmoothStrength] = useState(0);
+  const [exportingPatch, setExportingPatch] = useState(false);
+  const [patchMessage, setPatchMessage] = useState<string | null>(null);
+
+  async function handleExportMotionPatch() {
+    if (!selectedMotion || skeletonNodes.length === 0 || smoothStrength <= 0) return;
+    setExportingPatch(true);
+    setPatchMessage(null);
+    try {
+      const patch = await exportMotionPatch(
+        selectedMotion.archivePath,
+        selectedMotion.entryPath,
+        skeletonNodes.map((n) => n.name),
+        smoothStrength,
+      );
+      setPatchMessage(
+        (lang === "uk" ? "Патч зібрано: " : "Patch built: ") +
+          patch +
+          (lang === "uk" ? " — встанови його в гру в Налаштуваннях (🎮)" : " — install it via Settings (🎮)"),
+      );
+    } catch (e) {
+      setPatchMessage(String(e));
+    } finally {
+      setExportingPatch(false);
+    }
+  }
   const [playing, setPlaying] = useState(true);
   const [showSkeleton, setShowSkeleton] = useState(true);
   const [mirrorSkeleton, setMirrorSkeleton] = useState(false);
@@ -143,7 +170,10 @@ export default function Animations({ lang }: Props) {
     () => filterEntries(filterByTreeKey(actors, actorTreeKey), actorQuery),
     [actors, actorTreeKey, actorQuery],
   );
-  const visibleMotions = useMemo(() => filterEntries(motions, motionQuery), [motions, motionQuery]);
+  const visibleMotions = useMemo(() => {
+    const byQuery = filterEntries(motions, motionQuery);
+    return motionCategoryFilter === "all" ? byQuery : byQuery.filter((m) => motionCategory(m.name) === motionCategoryFilter);
+  }, [motions, motionQuery, motionCategoryFilter]);
 
   // Per-material texture resolution for multi-material actors (see the matching prop doc in
   // SkeletonAnimationViewer) — same library lookup the auto-match above uses. When the user
@@ -453,6 +483,28 @@ export default function Animations({ lang }: Props) {
                 {label}
               </button>
             ))}
+            {smoothStrength > 0 ? (
+              <button
+                onClick={handleExportMotionPatch}
+                disabled={exportingPatch}
+                title={
+                  lang === "uk"
+                    ? "Зібрати патч-том animations.pNN з цим кліпом у поточній силі згладжування — потім «Встановити в гру» в Налаштуваннях."
+                    : "Build an animations.pNN patch volume with this clip at the current smoothing strength — then “Install into game” in Settings."
+                }
+                style={{
+                  padding: "5px 10px",
+                  borderRadius: 12,
+                  background: exportingPatch ? "var(--bg2)" : "var(--accent)",
+                  border: "1px solid var(--accent)",
+                  font: "600 11px system-ui",
+                  color: exportingPatch ? "var(--text-dim)" : "#fff",
+                  cursor: exportingPatch ? "wait" : "pointer",
+                }}
+              >
+                {exportingPatch ? (lang === "uk" ? "Збирання…" : "Building…") : lang === "uk" ? "💾 У патч" : "💾 To patch"}
+              </button>
+            ) : null}
           </div>
         ) : (
           <div
@@ -593,10 +645,31 @@ export default function Animations({ lang }: Props) {
         </div>
 
         <div style={{ flexShrink: 0, height: 220, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", padding: "10px 16px" }}>
-          <div style={{ font: "600 10px system-ui", letterSpacing: ".06em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 6 }}>
-            {lang === "uk"
-              ? `Анімації (${visibleMotions.length} з ${motions.length} реальних)`
-              : `Animations (${visibleMotions.length} of ${motions.length} real)`}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+            <div style={{ font: "600 10px system-ui", letterSpacing: ".06em", textTransform: "uppercase", color: "var(--text-faint)" }}>
+              {lang === "uk"
+                ? `Анімації (${visibleMotions.length} з ${motions.length} реальних)`
+                : `Animations (${visibleMotions.length} of ${motions.length} real)`}
+            </div>
+            <div style={{ display: "flex", gap: 4 }}>
+              {MOTION_CATEGORIES.map((c) => (
+                <button
+                  key={c.id}
+                  onClick={() => setMotionCategoryFilter(c.id)}
+                  style={{
+                    padding: "3px 9px",
+                    borderRadius: 10,
+                    background: motionCategoryFilter === c.id ? "var(--accent)" : "var(--bg2)",
+                    border: `1px solid ${motionCategoryFilter === c.id ? "var(--accent)" : "var(--border)"}`,
+                    font: "600 10.5px system-ui",
+                    color: motionCategoryFilter === c.id ? "#fff" : "var(--text-dim)",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {lang === "uk" ? c.uk : c.en}
+                </button>
+              ))}
+            </div>
           </div>
           <div style={{ display: "flex", gap: 6, overflow: "auto", flex: 1 }}>
             <SearchableList
@@ -614,6 +687,24 @@ export default function Animations({ lang }: Props) {
 
       {error ? (
         <div style={{ position: "absolute", bottom: 12, right: 12, color: "var(--red)", font: "500 12px system-ui" }}>{error}</div>
+      ) : patchMessage ? (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 12,
+            right: 12,
+            maxWidth: 560,
+            background: "var(--bg1)",
+            border: "1px solid var(--border)",
+            borderRadius: 10,
+            padding: "8px 14px",
+            color: "var(--text)",
+            font: "500 12px system-ui",
+            wordBreak: "break-all",
+          }}
+        >
+          {patchMessage}
+        </div>
       ) : null}
     </div>
   );

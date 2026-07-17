@@ -226,6 +226,37 @@ export async function buildPatches(): Promise<string[]> {
   return api<string[]>("build-patches", { method: "POST" });
 }
 
+/** Copies every built `.pNN` patch volume into the game's own data directories — the
+ * "install my mod" step. Returns the installed `group/name` list. */
+export async function installPatches(): Promise<string[]> {
+  if (isTauri()) return invoke<string[]>("install_patches");
+  return api<string[]>("install-patches", { method: "POST" });
+}
+
+/** Removes previously installed patch volumes from the game (only files that also exist in
+ * the patch output dir — nothing else is touched). Returns the removed list. */
+export async function uninstallPatches(): Promise<string[]> {
+  if (isTauri()) return invoke<string[]>("uninstall_patches");
+  return api<string[]>("uninstall-patches", { method: "POST" });
+}
+
+/** Smooths one clip and packs it straight into a fresh animations `.pNN` patch volume —
+ * returns the patch file path (install with `installPatches`). */
+export async function exportMotionPatch(
+  archivePath: string,
+  entryPath: string,
+  boneNames: string[],
+  strength: number,
+): Promise<string> {
+  if (isTauri()) return invoke<string>("export_motion_patch", { archivePath, entryPath, boneNames, strength });
+  const res = await api<{ patch: string }>("export-motion-patch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archivePath, entryPath, boneNames, strength }),
+  });
+  return res.patch;
+}
+
 export async function backupProject(): Promise<string> {
   if (isTauri()) throw new Error("Backup is not implemented in the Tauri backend yet");
   const { path } = await api<{ path: string }>("backup", { method: "POST" });

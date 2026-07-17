@@ -518,6 +518,100 @@ pub fn motion_tracks(archive_path: &Path, entry_path: &str, bone_names: &[String
     xmot::parse_motion(&data, bone_names)
 }
 
+/// Copies every built patch volume from `patch_dir` (`<group>/<archive>.pNN` — the layout
+/// `apply`/`pack` produce) into the game's own matching `data/<group>/` directory, next to the
+/// archive it patches. Never overwrites a file that already exists in the game dir with a
+/// DIFFERENT origin: only a byte-different same-named file is replaced (same-named = ours from
+/// a previous install — patch slots are allocated to be free at build time). Returns the
+/// installed file names, grouped.
+pub fn install_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec<String>> {
+    let exe = gamepath::resolve_shortcut(exe_or_shortcut)?;
+    let root = gamepath::discover_game_root(&exe)
+        .ok_or_else(|| anyhow!("no Risen data directory found near {}", exe.display()))?;
+    let mut installed = Vec::new();
+    for group in ["compiled", "common"] {
+        let src_group = patch_dir.join(group);
+        if !src_group.is_dir() {
+            continue;
+        }
+        let dest_group = root.join("data").join(group);
+        if !dest_group.is_dir() {
+            bail!("game data directory missing: {}", dest_group.display());
+        }
+        for entry in fs::read_dir(&src_group)? {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else { continue };
+            // Only .pNN patch volumes — never copy anything else that might sit in the folder.
+            let is_patch = Path::new(&name)
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.len() >= 2 && e.starts_with('p') && e[1..].chars().all(|c| c.is_ascii_digit()))
+                .unwrap_or(false);
+            if !path.is_file() || !is_patch {
+                continue;
+            }
+            fs::copy(&path, dest_group.join(&name))
+                .with_context(|| format!("copying {name} into {}", dest_group.display()))?;
+            installed.push(format!("{group}/{name}"));
+        }
+    }
+    Ok(installed)
+}
+
+/// Removes previously installed patch volumes from the game: only files whose exact name also
+/// exists in `patch_dir` (i.e. files this app built) are deleted — nothing else in the game
+/// directory is ever touched. Returns the removed file names.
+pub fn uninstall_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec<String>> {
+    let exe = gamepath::resolve_shortcut(exe_or_shortcut)?;
+    let root = gamepath::discover_game_root(&exe)
+        .ok_or_else(|| anyhow!("no Risen data directory found near {}", exe.display()))?;
+    let mut removed = Vec::new();
+    for group in ["compiled", "common"] {
+        let src_group = patch_dir.join(group);
+        if !src_group.is_dir() {
+            continue;
+        }
+        let dest_group = root.join("data").join(group);
+        for entry in fs::read_dir(&src_group)? {
+            let path = entry?.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else { continue };
+            let installed = dest_group.join(&name);
+            if path.is_file() && installed.is_file() {
+                fs::remove_file(&installed).with_context(|| format!("removing {}", installed.display()))?;
+                removed.push(format!("{group}/{name}"));
+            }
+        }
+    }
+    Ok(removed)
+}
+
+/// The complete "enhance this animation → installable mod file" chain: smooths one clip
+/// (`smooth_motion_to_file`), stages it under its real entry path, and packs a fresh
+/// `<stem>.pNN` patch volume into `patch_dir/<group>/` using the source archive family's own
+/// storage convention (`animations.pak` = ZLib entries — see `pak::write_archive_from_dir_with`).
+/// Returns the patch path, ready for `install_patches`.
+pub fn export_motion_patch(
+    archive_path: &Path,
+    entry_path: &str,
+    bone_names: &[String],
+    strength: f32,
+    patch_dir: &Path,
+    group: &str,
+) -> Result<PathBuf> {
+    let stage_dir = patch_dir.join("_motion_stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    let staged = stage_dir.join(entry_path.trim_start_matches('/'));
+    smooth_motion_to_file(archive_path, entry_path, bone_names, strength, &staged)?;
+
+    let patch_path = next_patch_path(archive_path, patch_dir, group)?;
+    if let Some(parent) = patch_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    pak::write_archive_from_dir_with(&stage_dir, &patch_path, pak::FileCompression::ZLib)?;
+    let _ = fs::remove_dir_all(&stage_dir);
+    Ok(patch_path)
+}
+
 /// Real, local motion cleanup end-to-end: reads one clip from its archive, low-pass-filters
 /// every animated bone's tracks (`xmot::smooth_tracks`), patches the key values back IN PLACE
 /// (`xmot::patch_motion_keys` — same counts/sizes, so the whole file structure incl. every

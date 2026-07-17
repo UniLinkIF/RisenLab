@@ -439,6 +439,33 @@ export function risenlabDevApi(): Plugin {
             const written = [...stdout.matchAll(/^\s*(.+\.p\d+)\s*$/gm)].map((m) => m[1].trim());
             return sendJson(res, 200, written);
           }
+          if (url.pathname === "/api/install-patches" && req.method === "POST") {
+            const settings = await loadSettings();
+            if (!settings.gameExe) return sendJson(res, 400, { error: "gameExe not configured" });
+            const { stdout } = await runCli(["install-patches", settings.gameExe, settings.patchDir]);
+            return sendJson(res, 200, JSON.parse(stdout));
+          }
+          if (url.pathname === "/api/uninstall-patches" && req.method === "POST") {
+            const settings = await loadSettings();
+            if (!settings.gameExe) return sendJson(res, 400, { error: "gameExe not configured" });
+            const { stdout } = await runCli(["uninstall-patches", settings.gameExe, settings.patchDir]);
+            return sendJson(res, 200, JSON.parse(stdout));
+          }
+          if (url.pathname === "/api/export-motion-patch" && req.method === "POST") {
+            // Full "enhance this animation → installable mod file" chain, all in the CLI
+            // (smooth → stage under the real entry path → pack a zlib .pNN patch volume).
+            const { archivePath, entryPath, boneNames, strength } = await readJsonBody(req);
+            const settings = await loadSettings();
+            const { stdout } = await runCli([
+              "export-motion-patch",
+              archivePath,
+              entryPath,
+              JSON.stringify(boneNames),
+              String(strength),
+              settings.patchDir,
+            ]);
+            return sendJson(res, 200, { patch: JSON.parse(stdout) });
+          }
           if (url.pathname === "/api/backup" && req.method === "POST") {
             // Everything lives under one project root (outputDir/patchDir/reviewHtml are all
             // subpaths of it by default) — back up that whole root to a timestamped sibling
