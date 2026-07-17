@@ -44,6 +44,9 @@ export default function Models({ lang, onRegenerated }: Props) {
   const [diffuseUrl, setDiffuseUrl] = useState<string | null>(null);
   const [normalUrl, setNormalUrl] = useState<string | null>(null);
   const [showingGenerated, setShowingGenerated] = useState(false);
+  // Non-blocking "landed in the review queue" toast; carries the entry so the manual jump to
+  // review keeps the 3D-compare context.
+  const [genNotice, setGenNotice] = useState<LibraryEntry | null>(null);
   const [generating, setGenerating] = useState(false);
   // True after the user explicitly picks a texture by hand — per-material auto-resolution is
   // then suspended so the explicit choice actually shows on the whole mesh instead of being
@@ -167,9 +170,11 @@ export default function Models({ lang, onRegenerated }: Props) {
     setGenerating(true);
     try {
       await regenerateTexture(diffuseEntry.pngRel);
-      // Straight into the shared review flow (compare slider, approve/reject/regenerate) —
-      // the owner's expected next step after generating; same behavior as the Library.
-      onRegenerated(diffuseEntry, objUrl);
+      // Deliberately NO auto-navigation (owner: "мене викидає в погодження текстур... нехай
+      // працює у фоні"): the result lands in the review queue quietly, a toast offers the
+      // jump — with the model context, so the review's 3D mode still works when taken.
+      setShowingGenerated(true);
+      setGenNotice(diffuseEntry);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -178,7 +183,7 @@ export default function Models({ lang, onRegenerated }: Props) {
   }
 
   return (
-    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+    <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
       <FolderTree nodes={meshTree} selectedKey={meshTreeKey} onSelect={setMeshTreeKey} title={lang === "uk" ? "Архіви" : "Archives"} />
 
       <div
@@ -375,6 +380,40 @@ export default function Models({ lang, onRegenerated }: Props) {
           </button>
         ) : null}
       </div>
+      {genNotice ? (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 14,
+            right: 14,
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            background: "var(--bg1)",
+            border: "1px solid var(--border-strong)",
+            borderRadius: 10,
+            padding: "10px 14px",
+            boxShadow: "0 6px 20px rgba(0,0,0,.4)",
+            font: "500 12px system-ui",
+            color: "var(--text)",
+          }}
+        >
+          {lang === "uk" ? "✓ Додано в чергу рев'ю" : "✓ Added to the review queue"}
+          <button
+            onClick={() => onRegenerated(genNotice, objUrl)}
+            style={{ padding: "6px 12px", borderRadius: 8, background: "var(--accent)", border: "none", font: "600 11.5px system-ui", color: "#fff" }}
+          >
+            {lang === "uk" ? "Відкрити рев'ю" : "Open review"}
+          </button>
+          <button
+            onClick={() => setGenNotice(null)}
+            style={{ padding: "6px 10px", borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 11.5px system-ui", color: "var(--text-dim)" }}
+          >
+            {lang === "uk" ? "Пізніше" : "Later"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }
