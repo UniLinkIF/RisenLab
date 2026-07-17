@@ -280,6 +280,13 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               {lang === "uk" ? "Точний" : "Faithful"}
             </button>
             <button
+              onClick={() => persist({ ...settings, aiModel: "philz1337x/clarity-upscaler" })}
+              title={lang === "uk" ? "clarity-upscaler: апскейл, що ДОДАЄ деталі (пори, м'язи, зерно) за промптом — рекомендований, якщо «Точний» надто згладжує" : "clarity-upscaler: detail-ADDING upscale (pores, muscle, grain) guided by the prompt — pick this if Faithful looks too smooth"}
+              style={{ padding: "8px 12px", borderRadius: 8, background: settings.aiModel === "philz1337x/clarity-upscaler" ? "var(--accent)" : "var(--bg2)", border: `1px solid ${settings.aiModel === "philz1337x/clarity-upscaler" ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: settings.aiModel === "philz1337x/clarity-upscaler" ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
+            >
+              {lang === "uk" ? "Деталізований" : "Detailed"}
+            </button>
+            <button
               onClick={() => persist({ ...settings, aiModel: "stability-ai/sdxl" })}
               title={lang === "uk" ? "SDXL img2img з промптами за категорією текстури — більше нових деталей, більший ризик відхилень; все одно проходить рев'ю" : "SDXL img2img with per-category prompts — richer new detail, higher drift risk; still goes through review"}
               style={{ padding: "8px 12px", borderRadius: 8, background: settings.aiModel === "stability-ai/sdxl" ? "var(--accent)" : "var(--bg2)", border: `1px solid ${settings.aiModel === "stability-ai/sdxl" ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: settings.aiModel === "stability-ai/sdxl" ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}

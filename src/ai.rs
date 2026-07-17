@@ -111,9 +111,11 @@ pub fn texture_prompt(png_rel: &str) -> String {
     };
     format!(
         "High-resolution remaster of a video game texture: {subject}. \
-         Sharpen and enrich fine surface detail, keep the EXACT same colors, layout, \
-         silhouette and UV boundaries as the original image, seamless where the original is \
-         seamless, no new objects, no text, photorealistic material detail, 4k quality."
+         Extremely detailed micro-surface: pronounced muscle definition, skin pores, \
+         individual fur strands, fabric weave, metal scratches and stone grain where the \
+         material calls for it — crisp, never smoothed or plastic-looking. Keep the EXACT \
+         same colors, layout, silhouette and UV boundaries as the original image, seamless \
+         where the original is seamless, no new objects, no text, 4k quality."
     )
 }
 
@@ -130,6 +132,20 @@ pub fn is_data_map(png_rel: &str) -> bool {
 /// additionally gets the category prompt with a conservative denoising strength (the texture
 /// must stay recognizably itself).
 pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32) -> serde_json::Value {
+    if model.to_lowercase().contains("clarity") {
+        // philz1337x/clarity-upscaler — an upscaler that ADDS detail (tiled SD guided by the
+        // prompt) instead of real-esrgan's smoothing. High resemblance + modest creativity
+        // keeps the texture recognizably itself while restoring pores/muscle/grain.
+        return serde_json::json!({
+            "image": image_data_uri,
+            "prompt": texture_prompt(png_rel),
+            "negative_prompt": "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark",
+            "scale_factor": scale.clamp(2, 4),
+            "creativity": 0.3,
+            "resemblance": 1.4,
+            "dynamic": 6,
+        });
+    }
     if model.to_lowercase().contains("esrgan") {
         serde_json::json!({
             "image": image_data_uri,
@@ -342,6 +358,14 @@ mod tests {
         assert!(is_data_map("compiled/images/Animation/Monster/Ani_Monster_Wolf_Body_01_Normal_S1.png"));
         assert!(is_data_map("Special/ItWpn_Axes_01_Specular_01.png"));
         assert!(!is_data_map("Special/ItWpn_Axes_01_Diffuse_01.png"));
+    }
+
+    #[test]
+    fn clarity_input_carries_prompt_and_faithfulness_knobs() {
+        let v = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,x", "Monster_Ogre_Body_Diffuse.png", 2);
+        assert!(v.get("prompt").and_then(|p| p.as_str()).unwrap().contains("muscle"));
+        assert_eq!(v.get("scale_factor").and_then(|x| x.as_u64()), Some(2));
+        assert!(v.get("resemblance").is_some() && v.get("creativity").is_some());
     }
 
     #[test]
