@@ -10,6 +10,9 @@ import SearchableList from "../components/SearchableList";
 
 interface Props {
   lang: Lang;
+  /** Opens the shared review screen (compare slider + approve/reject/regenerate) for a
+   * freshly generated texture — the same flow the Library uses. */
+  onRegenerated: (entry: LibraryEntry) => void;
 }
 
 const MODES: ViewMode[] = ["textured", "wireframe", "clay", "normalMap"];
@@ -20,7 +23,7 @@ const MODE_LABEL: Record<ViewMode, { uk: string; en: string }> = {
   normalMap: { uk: "Рельєф (normal map)", en: "Relief (normal map)" },
 };
 
-export default function Models({ lang }: Props) {
+export default function Models({ lang, onRegenerated }: Props) {
   const [meshes, setMeshes] = useState<MeshEntry[]>([]);
   const [textures, setTextures] = useState<LibraryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -164,7 +167,9 @@ export default function Models({ lang }: Props) {
     setGenerating(true);
     try {
       await regenerateTexture(diffuseEntry.pngRel);
-      setShowingGenerated(true);
+      // Straight into the shared review flow (compare slider, approve/reject/regenerate) —
+      // the owner's expected next step after generating; same behavior as the Library.
+      onRegenerated(diffuseEntry);
     } catch (e) {
       setError(String(e));
     } finally {

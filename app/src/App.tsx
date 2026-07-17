@@ -51,7 +51,7 @@ export default function App() {
         <Sidebar active={screen === "ai-compare" ? "library" : screen} onNavigate={(s) => setScreen(s)} lang={lang} />
         {screen === "dashboard" ? <Dashboard lang={lang} /> : null}
         {screen === "library" ? <Library lang={lang} onRegenerated={handleRegenerated} /> : null}
-        {screen === "models" ? <Models lang={lang} /> : null}
+        {screen === "models" ? <Models lang={lang} onRegenerated={handleRegenerated} /> : null}
         {screen === "animations" ? <Animations lang={lang} /> : null}
         {screen === "settings" ? (
           <Settings lang={lang} onLangChange={changeLang} onSettingsSaved={handleSettingsSaved} />
