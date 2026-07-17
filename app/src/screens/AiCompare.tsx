@@ -31,14 +31,18 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
     setSliderPos(Math.min(1, Math.max(0, (clientX - box.left) / box.width)));
   }
 
-  async function refreshQueue(preferPngRel?: string | null) {
+  async function refreshQueue(preferPngRel?: string | null): Promise<ReviewItem[]> {
     const items = await reviewQueue();
-    const pending = items.filter((i) => i.status !== "rejected");
+    // Pending ONLY: an approved texture must leave the review queue immediately — keeping it
+    // (the old `!== "rejected"` filter) meant "Прийняти" visibly did nothing, because the
+    // just-approved item stayed as the current one.
+    const pending = items.filter((i) => i.status === "pending");
     setQueue(pending);
     if (preferPngRel) {
       const i = pending.findIndex((it) => it.pngRel === preferPngRel);
       if (i >= 0) setIndex(i);
     }
+    return pending;
   }
 
   useEffect(() => {
@@ -63,8 +67,10 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
     setBusy(true);
     try {
       await setReviewStatus(current.pngRel, status);
-      await refreshQueue();
-      setIndex((i) => Math.min(i, Math.max(0, queue.length - 2)));
+      // Clamp against the FRESH queue length — the old code clamped against the stale
+      // closure's `queue`, which could leave the index past the end after the last item.
+      const next = await refreshQueue();
+      setIndex((i) => Math.min(i, Math.max(0, next.length - 1)));
     } finally {
       setBusy(false);
     }
@@ -76,7 +82,11 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
     try {
       await regenerateTexture(current.pngRel);
       const url = await readEditedDataUrl(current.pngRel);
-      setVariant(url);
+      // Cache-bust: the dev API serves the edited file from a STABLE url, so after a
+      // re-generate the browser happily shows its cached old image — the button looked
+      // completely dead even though the file on disk changed. (Tauri returns data: URLs,
+      // which are self-busting — only query-style urls need the extra param.)
+      setVariant(url.startsWith("data:") ? url : `${url}${url.includes("?") ? "&" : "?"}v=${Date.now()}`);
     } finally {
       setBusy(false);
     }
@@ -210,8 +220,8 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
         <button disabled={busy} onClick={() => act("approved")} style={{ padding: "11px 22px", borderRadius: 10, background: "var(--green)", border: "none", font: "700 13px system-ui", color: "#0c1f10" }}>
           {s.approve}
         </button>
-        <button disabled={busy} onClick={regenerateAgain} style={{ padding: "11px 22px", borderRadius: 10, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 13px system-ui", color: "var(--text)" }}>
-          {s.regenerate}
+        <button disabled={busy} onClick={regenerateAgain} style={{ padding: "11px 22px", borderRadius: 10, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 13px system-ui", color: busy ? "var(--text-faint)" : "var(--text)", cursor: busy ? "wait" : "pointer" }}>
+          {busy ? (lang === "uk" ? "Працюю… (ШІ до 1-2 хв)" : "Working… (AI up to 1-2 min)") : s.regenerate}
         </button>
         <button disabled={busy} onClick={skip} style={{ padding: "11px 22px", borderRadius: 10, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 13px system-ui", color: "var(--text-dim)" }}>
           {s.skip}
