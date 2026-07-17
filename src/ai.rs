@@ -31,8 +31,12 @@ const PREDICTION_TIMEOUT: Duration = Duration::from_secs(240);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiConfig {
+    /// "replicate" (default) or "stability". OpenAI images is deliberately NOT offered: its
+    /// output comes only in fixed sizes (1024/1536), which breaks a texture's aspect/UVs.
+    pub provider: String,
     pub api_key: String,
-    /// `owner/name` on Replicate, e.g. "nightmareai/real-esrgan".
+    /// `owner/name` on Replicate, e.g. "nightmareai/real-esrgan". Unused by Stability (its
+    /// conservative-upscale endpoint is fixed).
     pub model: String,
 }
 
@@ -58,7 +62,13 @@ pub fn parse_settings_ai(json: &str) -> Option<AiConfig> {
         .filter(|m| !m.is_empty())
         .unwrap_or(DEFAULT_MODEL)
         .to_string();
-    Some(AiConfig { api_key: key, model })
+    let provider = value
+        .get("aiProvider")
+        .and_then(|p| p.as_str())
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "replicate".to_string());
+    Some(AiConfig { provider, api_key: key, model })
 }
 
 /// Reads AI config: `RISENLAB_AI_KEY` env var wins (model from settings or default), then the
@@ -69,8 +79,10 @@ pub fn load_config() -> Option<AiConfig> {
     if let Ok(env_key) = std::env::var("RISENLAB_AI_KEY") {
         let env_key = env_key.trim().to_string();
         if !env_key.is_empty() {
-            let model = from_settings.map(|c| c.model).unwrap_or_else(|| DEFAULT_MODEL.to_string());
-            return Some(AiConfig { api_key: env_key, model });
+            let (provider, model) = from_settings
+                .map(|c| (c.provider, c.model))
+                .unwrap_or_else(|| ("replicate".to_string(), DEFAULT_MODEL.to_string()));
+            return Some(AiConfig { provider, api_key: env_key, model });
         }
     }
     from_settings
@@ -169,9 +181,44 @@ fn output_url(prediction: &serde_json::Value) -> Option<String> {
     }
 }
 
-/// Runs one real enhancement through Replicate and returns the enhanced image bytes
-/// (png/jpeg/webp — caller decodes). Blocking by design: this is a CLI.
+/// Runs one real enhancement through the configured provider and returns the enhanced image
+/// bytes (png/jpeg/webp — caller decodes). Blocking by design: this is a CLI.
 pub fn enhance_png(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u32) -> Result<Vec<u8>> {
+    match cfg.provider.as_str() {
+        "replicate" => enhance_via_replicate(cfg, src_png, png_rel, scale),
+        "stability" => enhance_via_stability(cfg, src_png, png_rel),
+        other => bail!("unknown AI provider '{other}' (expected replicate|stability)"),
+    }
+}
+
+/// Stability AI's conservative upscale (`/v2beta/stable-image/upscale/conservative`): one
+/// multipart POST, image bytes come straight back (no polling). "Conservative" is exactly the
+/// texture-safe mode — content/colors preserved, up to ~4x. Prompt is a required field there;
+/// the per-category texture prompt serves as it. Errors come back as JSON (starts with '{'),
+/// success as raw image bytes — that's the discriminator.
+fn enhance_via_stability(cfg: &AiConfig, src_png: &Path, png_rel: &str) -> Result<Vec<u8>> {
+    let auth = format!("Authorization: Bearer {}", cfg.api_key);
+    let image_arg = format!("image=@{}", src_png.display());
+    let prompt_arg = format!("prompt={}", texture_prompt(png_rel));
+    let out = curl(&[
+        "-X", "POST",
+        "-H", &auth,
+        "-H", "Accept: image/*",
+        "-F", &image_arg,
+        "-F", &prompt_arg,
+        "-F", "output_format=png",
+        "https://api.stability.ai/v2beta/stable-image/upscale/conservative",
+    ])?;
+    if out.first() == Some(&b'{') {
+        bail!("Stability error: {}", String::from_utf8_lossy(&out[..out.len().min(400)]));
+    }
+    if out.is_empty() {
+        bail!("Stability returned an empty image");
+    }
+    Ok(out)
+}
+
+fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u32) -> Result<Vec<u8>> {
     let bytes = std::fs::read(src_png).with_context(|| format!("reading {}", src_png.display()))?;
     let data_uri = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
     let auth = format!("Authorization: Bearer {}", cfg.api_key);
@@ -251,6 +298,15 @@ mod tests {
         let cfg = parse_settings_ai(r#"{"aiApiKey": "r8_abc", "aiModel": "stability-ai/sdxl"}"#).unwrap();
         assert_eq!(cfg.api_key, "r8_abc");
         assert_eq!(cfg.model, "stability-ai/sdxl");
+        assert_eq!(cfg.provider, "replicate", "provider defaults to replicate");
+    }
+
+    #[test]
+    fn parse_settings_reads_provider() {
+        let cfg = parse_settings_ai(r#"{"aiApiKey": "sk-abc", "aiProvider": "Stability"}"#).unwrap();
+        assert_eq!(cfg.provider, "stability", "normalized to lowercase");
+        let cfg = parse_settings_ai(r#"{"aiApiKey": "k", "aiProvider": ""}"#).unwrap();
+        assert_eq!(cfg.provider, "replicate", "empty falls back to default");
     }
 
     #[test]

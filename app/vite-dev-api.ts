@@ -28,6 +28,7 @@ function defaultSettings() {
     language: "uk",
     // Real AI texture enhancement (Replicate) — the Rust CLI reads these straight from
     // settings.json; empty key = feature dormant, local Lanczos fallback.
+    aiProvider: null as string | null,
     aiApiKey: null as string | null,
     aiModel: null as string | null,
   };

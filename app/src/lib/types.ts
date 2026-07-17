@@ -98,7 +98,9 @@ export interface AppSettings {
   patchDir: string;
   reviewHtml: string;
   language: "uk" | "en";
-  /** Replicate API token — real AI texture enhancement turns on when this is set (the Rust
+  /** AI provider: "replicate" (default) | "stability". */
+  aiProvider?: string | null;
+  /** Provider API token — real AI texture enhancement turns on when this is set (the Rust
    * CLI reads it straight from settings.json; empty/absent = local Lanczos fallback). */
   aiApiKey?: string | null;
   /** Replicate model override (`owner/name`); empty = the built-in default upscaler. */

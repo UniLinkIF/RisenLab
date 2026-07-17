@@ -24,6 +24,9 @@ pub struct AppSettings {
     /// Replicate API token for real AI texture enhancement (see `risenlab::ai`). `None` /
     /// empty = feature dormant, local Lanczos is used. `#[serde(default)]` keeps old
     /// settings.json files (without these keys) loading.
+    /// "replicate" (default) | "stability".
+    #[serde(default)]
+    pub ai_provider: Option<String>,
     #[serde(default)]
     pub ai_api_key: Option<String>,
     /// Replicate model override (`owner/name`); default is `risenlab::ai::DEFAULT_MODEL`.
@@ -50,6 +53,7 @@ pub fn default_settings_for(home: &Path) -> AppSettings {
         patch_dir: desktop.join("RisenLab-Patch").to_string_lossy().into_owned(),
         review_html: desktop.join("RisenLab-Review.html").to_string_lossy().into_owned(),
         language: "uk".to_string(),
+        ai_provider: None,
         ai_api_key: None,
         ai_model: None,
     }

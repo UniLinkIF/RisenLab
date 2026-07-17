@@ -211,12 +211,33 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
             <div style={{ width: 130, flexShrink: 0, font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
+              {lang === "uk" ? "Провайдер" : "Provider"}
+            </div>
+            {([
+              ["replicate", "Replicate", lang === "uk" ? "Дефолт: real-esrgan та будь-яка img2img-модель, токен r8_…" : "Default: real-esrgan + any img2img model, r8_… token"],
+              ["stability", "Stability AI", lang === "uk" ? "Conservative upscale (до 4x, кольори/розкладка недоторкані), токен sk-…" : "Conservative upscale (up to 4x, colors/layout preserved), sk-… token"],
+            ] as [string, string, string][]).map(([id, label, hint]) => {
+              const active = (settings.aiProvider ?? "replicate") === id;
+              return (
+                <button
+                  key={id}
+                  onClick={() => persist({ ...settings, aiProvider: id === "replicate" ? null : id })}
+                  title={hint}
+                  style={{ padding: "8px 14px", borderRadius: 8, background: active ? "var(--accent)" : "var(--bg2)", border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: active ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <div style={{ width: 130, flexShrink: 0, font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
               {lang === "uk" ? "API-ключ" : "API key"}
             </div>
             <input
               type="password"
               value={settings.aiApiKey ?? ""}
-              placeholder="r8_…"
+              placeholder={(settings.aiProvider ?? "replicate") === "stability" ? "sk-…" : "r8_…"}
               autoComplete="off"
               onChange={(e) => persist({ ...settings, aiApiKey: e.target.value.trim() || null })}
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
@@ -240,6 +261,7 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               }
             />
           </div>
+          {(settings.aiProvider ?? "replicate") === "replicate" ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 130, flexShrink: 0, font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
               {lang === "uk" ? "Модель" : "Model"}
@@ -265,6 +287,7 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               {lang === "uk" ? "Художній" : "Artistic"}
             </button>
           </div>
+          ) : null}
           <div style={{ font: "500 11px system-ui", color: "var(--text-faint)", marginTop: 8, lineHeight: 1.5 }}>
             {lang === "uk"
               ? "Порожньо = точне збільшення (real-esrgan, без промпту). Можна вказати будь-яку img2img-модель Replicate (owner/name) — тоді застосуються промпти за категорією текстури (шкіра/метал/камінь/тканина…)."
