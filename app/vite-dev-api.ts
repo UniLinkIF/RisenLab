@@ -31,6 +31,7 @@ function defaultSettings() {
     aiProvider: null as string | null,
     aiApiKey: null as string | null,
     aiModel: null as string | null,
+    aiCreativity: null as number | null,
   };
 }
 const SETTINGS_PATH = path.join(PROJECT_ROOT, "settings.json");

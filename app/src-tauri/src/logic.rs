@@ -32,6 +32,9 @@ pub struct AppSettings {
     /// Replicate model override (`owner/name`); default is `risenlab::ai::DEFAULT_MODEL`.
     #[serde(default)]
     pub ai_model: Option<String>,
+    /// 0.1–0.9 "how much may the AI invent" dial (see `risenlab::ai::AiConfig::creativity`).
+    #[serde(default)]
+    pub ai_creativity: Option<f32>,
 }
 
 /// Reads `USERPROFILE` (Windows home dir); falls back to `.` if unset, which only happens
@@ -56,6 +59,7 @@ pub fn default_settings_for(home: &Path) -> AppSettings {
         ai_provider: None,
         ai_api_key: None,
         ai_model: None,
+        ai_creativity: None,
     }
 }
 

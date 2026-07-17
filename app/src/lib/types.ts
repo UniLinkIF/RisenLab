@@ -105,6 +105,8 @@ export interface AppSettings {
   aiApiKey?: string | null;
   /** Replicate model override (`owner/name`); empty = the built-in default upscaler. */
   aiModel?: string | null;
+  /** 0.1–0.9 "how much may the AI invent" dial; the AI mode buttons are presets over it. */
+  aiCreativity?: number | null;
 }
 
 export interface GameCheckResult {

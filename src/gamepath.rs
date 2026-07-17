@@ -16,9 +16,25 @@ use std::path::{Path, PathBuf};
 /// `MultiByteToWideChar(CP_ACP, ...)` decodes it correctly.
 #[cfg(windows)]
 fn decode_ansi_path(bytes: &[u8]) -> String {
-    use windows_sys::Win32::Globalization::{MultiByteToWideChar, CP_ACP};
+    // Manual FFI instead of the `windows-sys` crate: after a cache wipe that crate can't
+    // rebuild in the dev sandbox (its generated import libs need binutils' dlltool/as),
+    // while a plain extern declaration links against the libkernel32.a import lib that
+    // ships with Rust's own self-contained gnu toolchain.
+    const CP_ACP: u32 = 0;
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn MultiByteToWideChar(
+            codepage: u32,
+            flags: u32,
+            bytes: *const u8,
+            byte_len: i32,
+            wide: *mut u16,
+            wide_len: i32,
+        ) -> i32;
+    }
     unsafe {
-        let wide_len = MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), bytes.len() as i32, std::ptr::null_mut(), 0);
+        let wide_len =
+            MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), bytes.len() as i32, std::ptr::null_mut(), 0);
         if wide_len <= 0 {
             return String::from_utf8_lossy(bytes).into_owned();
         }

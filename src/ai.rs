@@ -38,6 +38,10 @@ pub struct AiConfig {
     /// `owner/name` on Replicate, e.g. "nightmareai/real-esrgan". Unused by Stability (its
     /// conservative-upscale endpoint is fixed).
     pub model: String,
+    /// 0.1..0.9, the "how much may the AI invent" dial (settings `aiCreativity`): clarity's
+    /// creativity / SDXL's denoising strength. The UI's modes are presets over this —
+    /// «Деталізований» ≈ 0.5, «Ремастер» ≈ 0.75.
+    pub creativity: f32,
 }
 
 /// The app's settings file — the same one `vite-dev-api.ts` (dev) and the Tauri backend
@@ -68,7 +72,12 @@ pub fn parse_settings_ai(json: &str) -> Option<AiConfig> {
         .map(|p| p.trim().to_lowercase())
         .filter(|p| !p.is_empty())
         .unwrap_or_else(|| "replicate".to_string());
-    Some(AiConfig { provider, api_key: key, model })
+    let creativity = value
+        .get("aiCreativity")
+        .and_then(|c| c.as_f64())
+        .map(|c| (c as f32).clamp(0.1, 0.9))
+        .unwrap_or(0.6);
+    Some(AiConfig { provider, api_key: key, model, creativity })
 }
 
 /// Reads AI config: `RISENLAB_AI_KEY` env var wins (model from settings or default), then the
@@ -79,10 +88,10 @@ pub fn load_config() -> Option<AiConfig> {
     if let Ok(env_key) = std::env::var("RISENLAB_AI_KEY") {
         let env_key = env_key.trim().to_string();
         if !env_key.is_empty() {
-            let (provider, model) = from_settings
-                .map(|c| (c.provider, c.model))
-                .unwrap_or_else(|| ("replicate".to_string(), DEFAULT_MODEL.to_string()));
-            return Some(AiConfig { provider, api_key: env_key, model });
+            let (provider, model, creativity) = from_settings
+                .map(|c| (c.provider, c.model, c.creativity))
+                .unwrap_or_else(|| ("replicate".to_string(), DEFAULT_MODEL.to_string(), 0.6));
+            return Some(AiConfig { provider, api_key: env_key, model, creativity });
         }
     }
     from_settings
@@ -131,18 +140,20 @@ pub fn is_data_map(png_rel: &str) -> bool {
 /// real-esrgan) take `image` + `scale`; anything else is treated as an img2img refiner and
 /// additionally gets the category prompt with a conservative denoising strength (the texture
 /// must stay recognizably itself).
-pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32) -> serde_json::Value {
+pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32, creativity: f32) -> serde_json::Value {
+    let creativity = creativity.clamp(0.1, 0.9);
     if model.to_lowercase().contains("clarity") {
         // philz1337x/clarity-upscaler — an upscaler that ADDS detail (tiled SD guided by the
-        // prompt) instead of real-esrgan's smoothing. High resemblance + modest creativity
-        // keeps the texture recognizably itself while restoring pores/muscle/grain.
+        // prompt) instead of real-esrgan's smoothing. `creativity` is the mode dial: ~0.5
+        // re-details faithfully, ~0.75 visibly re-imagines patterns ("Ремастер" mode);
+        // resemblance moves opposite so the two knobs don't fight each other.
         return serde_json::json!({
             "image": image_data_uri,
             "prompt": texture_prompt(png_rel),
             "negative_prompt": "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark",
             "scale_factor": scale.clamp(2, 4),
-            "creativity": 0.6,
-            "resemblance": 0.9,
+            "creativity": creativity,
+            "resemblance": (1.5 - creativity).clamp(0.5, 1.4),
             "dynamic": 12,
             "num_inference_steps": 22,
         });
@@ -158,7 +169,7 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32)
             "image": image_data_uri,
             "prompt": texture_prompt(png_rel),
             "negative_prompt": "different colors, changed layout, new objects, text, watermark, frame, blurry",
-            "strength": 0.3,
+            "strength": (creativity * 0.7).clamp(0.15, 0.6),
             "guidance_scale": 6.0,
         })
     }
@@ -241,7 +252,7 @@ fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u
     let auth = format!("Authorization: Bearer {}", cfg.api_key);
 
     // Request body → temp file (megabytes of base64 blow past the command-line length limit).
-    let body = serde_json::json!({ "input": build_input(&cfg.model, &data_uri, png_rel, scale) });
+    let body = serde_json::json!({ "input": build_input(&cfg.model, &data_uri, png_rel, scale, cfg.creativity) });
     let body_path = std::env::temp_dir().join(format!("risenlab_ai_{}.json", std::process::id()));
     std::fs::write(&body_path, serde_json::to_vec(&body)?).context("writing request body temp file")?;
     let body_arg = format!("@{}", body_path.display());
@@ -363,7 +374,7 @@ mod tests {
 
     #[test]
     fn clarity_input_carries_prompt_and_faithfulness_knobs() {
-        let v = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,x", "Monster_Ogre_Body_Diffuse.png", 2);
+        let v = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,x", "Monster_Ogre_Body_Diffuse.png", 2, 0.75);
         assert!(v.get("prompt").and_then(|p| p.as_str()).unwrap().contains("muscle"));
         assert_eq!(v.get("scale_factor").and_then(|x| x.as_u64()), Some(2));
         assert!(v.get("resemblance").is_some() && v.get("creativity").is_some());
@@ -371,10 +382,10 @@ mod tests {
 
     #[test]
     fn esrgan_input_has_no_prompt_but_img2img_does() {
-        let esrgan = build_input("nightmareai/real-esrgan", "data:image/png;base64,xxx", "a_Diffuse.png", 2);
+        let esrgan = build_input("nightmareai/real-esrgan", "data:image/png;base64,xxx", "a_Diffuse.png", 2, 0.5);
         assert!(esrgan.get("prompt").is_none());
         assert_eq!(esrgan.get("scale").and_then(|v| v.as_u64()), Some(2));
-        let sdxl = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2);
+        let sdxl = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.5);
         assert!(sdxl.get("prompt").and_then(|p| p.as_str()).unwrap().contains("creature"));
     }
 

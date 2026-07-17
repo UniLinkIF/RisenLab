@@ -101,6 +101,28 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
     }
   }
 
+  // The owner's "натиснув кнопку і текстури в грі": approved textures → minimal .pXX
+  // patches → copied next to the game's own archives, one click.
+  async function onShipToGame() {
+    setPatchMessage(lang === "uk" ? "Збираю патчі…" : "Building patches…");
+    try {
+      const written = await buildPatches();
+      setPatchMessage(lang === "uk" ? "Встановлюю в гру…" : "Installing into the game…");
+      const installed = await installPatches();
+      setPatchMessage(
+        installed.length
+          ? (lang === "uk" ? "🚀 У грі! Встановлено: " : "🚀 In the game! Installed: ") + installed.join(", ")
+          : written.length
+            ? (lang === "uk" ? "Патчі зібрано, але встановлено 0 — перевір шлях до гри" : "Patches built but 0 installed — check the game path")
+            : lang === "uk"
+              ? "Немає ПРИЙНЯТИХ текстур — спершу прийми їх у рев'ю"
+              : "No APPROVED textures — approve some in review first",
+      );
+    } catch (e) {
+      setPatchMessage(String(e));
+    }
+  }
+
   if (!settings) return null;
 
   async function browseFolder(setValue: (v: string) => Promise<void>) {
@@ -272,27 +294,24 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               onChange={(e) => persist({ ...settings, aiModel: e.target.value.trim() || null })}
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
             />
-            <button
-              onClick={() => persist({ ...settings, aiModel: null })}
-              title={lang === "uk" ? "real-esrgan: точне збільшення, кольори/розкладка недоторкані — безпечний дефолт" : "real-esrgan: faithful upscale, colors/layout untouched — the safe default"}
-              style={{ padding: "8px 12px", borderRadius: 8, background: !settings.aiModel ? "var(--accent)" : "var(--bg2)", border: `1px solid ${!settings.aiModel ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: !settings.aiModel ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
-            >
-              {lang === "uk" ? "Точний" : "Faithful"}
-            </button>
-            <button
-              onClick={() => persist({ ...settings, aiModel: "philz1337x/clarity-upscaler" })}
-              title={lang === "uk" ? "clarity-upscaler: апскейл, що ДОДАЄ деталі (пори, м'язи, зерно) за промптом — рекомендований, якщо «Точний» надто згладжує" : "clarity-upscaler: detail-ADDING upscale (pores, muscle, grain) guided by the prompt — pick this if Faithful looks too smooth"}
-              style={{ padding: "8px 12px", borderRadius: 8, background: settings.aiModel === "philz1337x/clarity-upscaler" ? "var(--accent)" : "var(--bg2)", border: `1px solid ${settings.aiModel === "philz1337x/clarity-upscaler" ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: settings.aiModel === "philz1337x/clarity-upscaler" ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
-            >
-              {lang === "uk" ? "Деталізований" : "Detailed"}
-            </button>
-            <button
-              onClick={() => persist({ ...settings, aiModel: "stability-ai/sdxl" })}
-              title={lang === "uk" ? "SDXL img2img з промптами за категорією текстури — більше нових деталей, більший ризик відхилень; все одно проходить рев'ю" : "SDXL img2img with per-category prompts — richer new detail, higher drift risk; still goes through review"}
-              style={{ padding: "8px 12px", borderRadius: 8, background: settings.aiModel === "stability-ai/sdxl" ? "var(--accent)" : "var(--bg2)", border: `1px solid ${settings.aiModel === "stability-ai/sdxl" ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: settings.aiModel === "stability-ai/sdxl" ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
-            >
-              {lang === "uk" ? "Художній" : "Artistic"}
-            </button>
+            {([
+              [null, 0.5, lang === "uk" ? "Точний" : "Faithful", lang === "uk" ? "real-esrgan: тільки збільшення, нічого не вигадує" : "real-esrgan: pure upscale, invents nothing"],
+              ["philz1337x/clarity-upscaler", 0.5, lang === "uk" ? "Деталізований" : "Detailed", lang === "uk" ? "Відновлює пори/м'язи/зерно, тримаючись оригіналу" : "Restores pores/muscle/grain, staying close to the original"],
+              ["philz1337x/clarity-upscaler", 0.78, lang === "uk" ? "🔥 Ремастер" : "🔥 Remaster", lang === "uk" ? "Помітно ПЕРЕМАЛЬОВУЄ узори і деталі — справжній ремастер-вигляд; все проходить твоє рев'ю" : "Visibly RE-IMAGINES patterns/detail — real remaster look; still gated by your review"],
+              ["stability-ai/sdxl", 0.6, lang === "uk" ? "Художній" : "Artistic", lang === "uk" ? "SDXL img2img — найвільніший, найбільший ризик відхилень" : "SDXL img2img — freest, highest drift risk"],
+            ] as [string | null, number, string, string][]).map(([model, creativity, label, hint]) => {
+              const active = (settings.aiModel ?? null) === model && Math.abs((settings.aiCreativity ?? 0.6) - creativity) < 0.05;
+              return (
+                <button
+                  key={label}
+                  onClick={() => persist({ ...settings, aiModel: model, aiCreativity: creativity })}
+                  title={hint}
+                  style={{ padding: "8px 12px", borderRadius: 8, background: active ? "var(--accent)" : "var(--bg2)", border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: active ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
+                >
+                  {label}
+                </button>
+              );
+            })}
           </div>
           ) : null}
           <div style={{ font: "500 11px system-ui", color: "var(--text-faint)", marginTop: 8, lineHeight: 1.5 }}>
@@ -330,6 +349,14 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 0" }}>
             <div style={{ font: "500 12.5px system-ui", color: "var(--text-dim)" }}>{s.buildPatch}</div>
             <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={onShipToGame}
+                disabled={!settings.gameExe}
+                title={lang === "uk" ? "Одна кнопка: прийняті текстури → мінімальні патчі → одразу в теку гри. Запускай гру і дивись." : "One click: approved textures → minimal patches → straight into the game folder."}
+                style={{ padding: "8px 16px", borderRadius: 9, background: "var(--green)", border: "none", font: "700 12px system-ui", color: "#0c1f10", opacity: settings.gameExe ? 1 : 0.5 }}
+              >
+                {lang === "uk" ? "🚀 Текстури в гру" : "🚀 Ship to game"}
+              </button>
               <button onClick={onBuildPatch} style={{ padding: "8px 16px", borderRadius: 9, background: "var(--accent)", border: "none", font: "600 12px system-ui", color: "#fff" }}>
                 {s.buildPatch}
               </button>
