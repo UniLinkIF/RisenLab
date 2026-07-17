@@ -16,6 +16,9 @@ export default function App() {
   const [lang, setLang] = useState<Lang>("uk");
   const [screen, setScreen] = useState<Screen | "ai-compare">("dashboard");
   const [aiPngRel, setAiPngRel] = useState<string | null>(null);
+  // 3D context for the review screen: set when the review was opened from Models (we know
+  // which mesh the texture was generated for), null when opened from the Library.
+  const [aiModelObj, setAiModelObj] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
@@ -31,8 +34,9 @@ export default function App() {
     await saveSettings({ ...current, language: l });
   }
 
-  function handleRegenerated(entry: LibraryEntry) {
+  function handleRegenerated(entry: LibraryEntry, modelObjUrl?: string | null) {
     setAiPngRel(entry.pngRel);
+    setAiModelObj(modelObjUrl ?? null);
     setScreen("ai-compare");
   }
 
@@ -56,7 +60,7 @@ export default function App() {
         {screen === "settings" ? (
           <Settings lang={lang} onLangChange={changeLang} onSettingsSaved={handleSettingsSaved} />
         ) : null}
-        {screen === "ai-compare" ? <AiCompare lang={lang} initialPngRel={aiPngRel} /> : null}
+        {screen === "ai-compare" ? <AiCompare lang={lang} initialPngRel={aiPngRel} modelObjUrl={aiModelObj} /> : null}
       </div>
       <ErrorLog lang={lang} />
     </div>

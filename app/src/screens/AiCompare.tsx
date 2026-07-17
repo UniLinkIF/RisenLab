@@ -3,15 +3,20 @@ import type { Lang } from "../lib/i18n";
 import { queueCount, t } from "../lib/i18n";
 import type { LibraryEntry, ReviewItem } from "../lib/types";
 import { listLibrary, readEditedDataUrl, readTextureDataUrl, regenerateTexture, reviewQueue, setReviewStatus } from "../lib/api";
+import { findTextureEntryForBaseName } from "../lib/materials";
+import Model3DViewer from "../components/Model3DViewer";
 
 interface Props {
   lang: Lang;
   initialPngRel: string | null;
+  /** When the review was opened from Models we know which mesh the texture belongs to —
+   * enables the 3D before/after mode. Null when opened from the Library. */
+  modelObjUrl?: string | null;
 }
 
-type Mode = "side" | "slider";
+type Mode = "side" | "slider" | "3d";
 
-export default function AiCompare({ lang, initialPngRel }: Props) {
+export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   const s = t(lang);
   const [mode, setMode] = useState<Mode>("side");
   const [queue, setQueue] = useState<ReviewItem[]>([]);
@@ -52,6 +57,15 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
   }, []);
 
   const current = queue[index] ?? null;
+
+  // 3D mode: two viewers of the SAME mesh where only the reviewed texture differs — every
+  // other material resolves normally, so multi-material models stay correct.
+  const makeResolver = (variantUrl: string | null) => async (baseName: string) => {
+    const found = findTextureEntryForBaseName(entries, baseName);
+    if (!found) return null;
+    if (current && found.pngRel === current.pngRel) return variantUrl;
+    return readTextureDataUrl(found.pngRel);
+  };
   const entry = useMemo(() => entries.find((e) => e.pngRel === current?.pngRel) ?? null, [entries, current]);
 
   useEffect(() => {
@@ -114,7 +128,7 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
           </div>
         </div>
         <div style={{ display: "flex", background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 20, padding: 3, gap: 2 }}>
-          {(["side", "slider"] as Mode[]).map((m) => (
+          {((modelObjUrl ? ["side", "slider", "3d"] : ["side", "slider"]) as Mode[]).map((m) => (
             <button
               key={m}
               onClick={() => setMode(m)}
@@ -133,7 +147,28 @@ export default function AiCompare({ lang, initialPngRel }: Props) {
         </div>
       </div>
 
-      {mode === "side" ? (
+      {mode === "3d" && modelObjUrl ? (
+        <div style={{ flex: 1, display: "flex", gap: 2, padding: "18px 26px", minHeight: 0 }}>
+          {([
+            [s.original, original, false],
+            [s.variant, variant, true],
+          ] as [string, string | null, boolean][]).map(([label, url, isVariant]) => (
+            <div key={label} style={{ flex: 1, position: "relative", minWidth: 0, borderRadius: 14, overflow: "hidden", border: `1px solid ${isVariant ? "var(--accent)" : "var(--border-strong)"}` }}>
+              <Model3DViewer
+                key={`${current.pngRel}::${isVariant ? "v" : "o"}::${url ?? ""}`}
+                objUrl={modelObjUrl}
+                diffuseUrl={url}
+                normalUrl={null}
+                mode="textured"
+                resolveTexture={makeResolver(url)}
+              />
+              <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: isVariant ? "#fff" : "var(--text-dim)", background: isVariant ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
+                {label}
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : mode === "side" ? (
         <div style={{ flex: 1, display: "flex", gap: 18, padding: "18px 26px", minHeight: 0 }}>
           {[
             [s.original, original, "var(--border-strong)"],

@@ -12,7 +12,7 @@ interface Props {
   lang: Lang;
   /** Opens the shared review screen (compare slider + approve/reject/regenerate) for a
    * freshly generated texture — the same flow the Library uses. */
-  onRegenerated: (entry: LibraryEntry) => void;
+  onRegenerated: (entry: LibraryEntry, modelObjUrl?: string | null) => void;
 }
 
 const MODES: ViewMode[] = ["textured", "wireframe", "clay", "normalMap"];
@@ -169,7 +169,7 @@ export default function Models({ lang, onRegenerated }: Props) {
       await regenerateTexture(diffuseEntry.pngRel);
       // Straight into the shared review flow (compare slider, approve/reject/regenerate) —
       // the owner's expected next step after generating; same behavior as the Library.
-      onRegenerated(diffuseEntry);
+      onRegenerated(diffuseEntry, objUrl);
     } catch (e) {
       setError(String(e));
     } finally {
