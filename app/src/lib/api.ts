@@ -291,6 +291,20 @@ export async function exportMotionPatch(
   return res.patch;
 }
 
+/** The real, exportable "🎬 60fps" — genuinely doubles key rate and resizes the `.xmot` on
+ * disk (`xmot::rebuild_motion_file`), unlike `motion-tracks`' `doubleRate` flag, which only
+ * ever affects the in-app preview. UNVERIFIED IN-GAME — see the Rust doc comment on
+ * `batch::export_double_rate_motion_patch`. Returns the patch file path. */
+export async function exportDoubleRateMotionPatch(archivePath: string, entryPath: string, boneNames: string[]): Promise<string> {
+  if (isTauri()) return invoke<string>("export_double_rate_motion_patch", { archivePath, entryPath, boneNames });
+  const res = await api<{ patch: string }>("export-double-rate-motion-patch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ archivePath, entryPath, boneNames }),
+  });
+  return res.patch;
+}
+
 export async function backupProject(): Promise<string> {
   if (isTauri()) throw new Error("Backup is not implemented in the Tauri backend yet");
   const { path } = await api<{ path: string }>("backup", { method: "POST" });

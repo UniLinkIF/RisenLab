@@ -184,6 +184,19 @@ enum Commands {
         #[arg(default_value = "compiled")]
         group: String,
     },
+    /// The real, exportable 60fps: doubles key rate and writes a genuinely RESIZED `._xmot`
+    /// (`xmot::rebuild_motion_file`), unlike the in-app-preview-only doubleRate flag on
+    /// `motion-tracks`. `bone_names_json` MUST be the actor's complete real skeleton — see that
+    /// function's doc comment for why a partial list is refused rather than silently corrupting
+    /// the file. UNVERIFIED IN-GAME (see the function's doc comment). Prints the patch path.
+    ExportDoubleRateMotionPatch {
+        archive: PathBuf,
+        entry_path: String,
+        bone_names_json: String,
+        patch_dir: PathBuf,
+        #[arg(default_value = "compiled")]
+        group: String,
+    },
     /// Styles MANY clips the same way (entries_json = JSON array of entry paths, e.g. every
     /// animation of one creature) into a SINGLE `<stem>.pNN` patch volume. Prints
     /// `{patch, failed[]}`.
@@ -497,6 +510,11 @@ fn main() -> anyhow::Result<()> {
             let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
             let style = batch::MotionStyle { smooth, expressiveness, secondary, sharpness };
             let patch = batch::export_motion_patch(&archive, &entry_path, &bone_names, style, &patch_dir, &group)?;
+            println!("{}", serde_json::to_string(&patch.to_string_lossy())?);
+        }
+        Commands::ExportDoubleRateMotionPatch { archive, entry_path, bone_names_json, patch_dir, group } => {
+            let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
+            let patch = batch::export_double_rate_motion_patch(&archive, &entry_path, &bone_names, &patch_dir, &group)?;
             println!("{}", serde_json::to_string(&patch.to_string_lossy())?);
         }
         Commands::ExportMotionPatchBatch {

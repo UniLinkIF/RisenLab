@@ -686,6 +686,44 @@ pub fn smooth_motion_to_file(archive_path: &Path, entry_path: &str, bone_names: 
     style_motion_to_file(archive_path, entry_path, bone_names, MotionStyle { smooth: strength, ..Default::default() }, out_path)
 }
 
+/// The real, exportable counterpart of the "🎬 60fps" IN-APP PREVIEW (`xmot::resample_double_rate`
+/// via `MotionStyle.doubleRate`, wired only through `motion-tracks`, never through this file):
+/// doubles every bone's position/rotation key rate and writes a genuinely RESIZED `._xmot` via
+/// `xmot::rebuild_motion_file` (unlike `style_motion_to_file`'s in-place patch, which can only
+/// ever produce the SAME byte length). Scale/scale-rotation channels are carried through
+/// untouched. `bone_names` must be the actor's COMPLETE real skeleton (every node from
+/// `actor-skeleton`, not a filtered subset) — `rebuild_motion_file` walks records in file order
+/// and refuses to run rather than silently drop a real record it wasn't told about.
+///
+/// UNVERIFIED IN-GAME: this is new, self-consistency-tested (round-trip byte-identical at
+/// zero-op, correct doubled counts, size field patched) but never confirmed against the real
+/// engine's own `.xmot` loader — the chunk-wrapper size field this needed decoded was reverse
+/// engineered from two real clips' own declared vs. actual byte lengths, not from documentation
+/// or engine source. Treat a patch built from this the same as any other new format writer in
+/// this project: build it, install it, and look.
+pub fn export_double_rate_motion_patch(archive_path: &Path, entry_path: &str, bone_names: &[String], patch_dir: &Path, group: &str) -> Result<PathBuf> {
+    let stage_dir = patch_dir.join("_motion_stage");
+    let _ = fs::remove_dir_all(&stage_dir);
+    let staged = stage_dir.join(entry_path.trim_start_matches('/'));
+
+    let data = read_raw_entry_bytes(archive_path, entry_path)?;
+    let tracks = xmot::parse_motion(&data, bone_names)?;
+    let doubled = xmot::resample_double_rate(&tracks);
+    let rebuilt = xmot::rebuild_motion_file(&data, bone_names, &doubled)?;
+    if let Some(parent) = staged.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&staged, rebuilt).with_context(|| format!("writing {}", staged.display()))?;
+
+    let patch_path = next_patch_path(archive_path, patch_dir, group)?;
+    if let Some(parent) = patch_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    pak::write_archive_from_dir_with(&stage_dir, &patch_path, pak::FileCompression::ZLib)?;
+    let _ = fs::remove_dir_all(&stage_dir);
+    Ok(patch_path)
+}
+
 /// A real actor's skinned mesh (positions/normals/UVs/faces/per-vertex bone weights), parsed
 /// directly from the `._xmac` bytes in Rust (`xmesh_skin::parse_skinned_mesh`) — the data
 /// `mesh_to_obj_from_archive`'s OBJ export can't carry (OBJ has no per-vertex bone weights),

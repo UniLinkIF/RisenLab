@@ -20,8 +20,14 @@ Engine/format layer (`src/`), all verified against the real game, not synthetic 
 - Motion clips (`._xmot`, `xmot.rs`): real keyframe parsing incl. the header-key-count fix
   that untangled rotation vs. scale-rotation channels, in-place value/time patching
   (`patch_motion_keys`), jitter smoothing, and four animation-quality transforms
-  (`stylize_tracks`: expressiveness / secondary motion / attack retiming / preview-only
-  60fps resampling — see "Known gaps" below for what's NOT wired to export).
+  (`stylize_tracks`: expressiveness / secondary motion / attack retiming / 60fps resampling).
+  **60fps is now genuinely exportable, not just a preview**: `rebuild_motion_file` +
+  `export_double_rate_motion_patch` decode the outer `GR01MO01` container's payload-size field
+  (empirically confirmed on two real, differently-sized clips: `total_file_len - xsm_offset`)
+  and rebuild the whole payload with resized key counts, patching that one field. Real-data
+  tested (built a real patch from the real Ogre walk clip: 91292 -> 116212 bytes, size field
+  correct, structural prefix byte-identical except that field) — see "Known gaps" for what
+  "tested" does NOT mean here.
 - AI texture enhancement (`ai.rs`): Replicate (default `real-esrgan`, any img2img model
   opt-in) + Stability AI conservative upscale, both via `curl.exe` (no Rust TLS stack builds
   in the dev sandbox). Auth header goes through a short-lived curl config file, never argv.
@@ -38,12 +44,17 @@ App (`app/`, Tauri + React + three.js):
   sandbox itself can't link a Tauri binary (no MinGW `dlltool`), so this is the actual release
   path now, not a local `cargo build`.
 
-## Known gaps (as of 2026-07-18 audit)
+## Known gaps (as of 2026-07-18)
 
-- **60fps is preview-only.** `resample_double_rate` changes key counts, and `patch_motion_keys`
-  can only patch VALUES in place at a FIXED count — turning this into a real exportable patch
-  needs the `.xmot` chunk-size wrapper fields decoded (not done) so a resized record's
-  surrounding structure stays valid.
+- **60fps export is real but UNVERIFIED IN-GAME.** `rebuild_motion_file`'s correctness is
+  proven at the level of: (a) synthetic round-trip tests (rebuild-with-original-values is
+  byte-identical), (b) real-data structural checks (the size field is right, the untouched
+  prefix is byte-identical, doubled key counts re-parse correctly) — but never against the
+  actual Risen engine's own `.xmot` loader, since nothing in this pipeline can run the game.
+  The one piece of the format this needed decoded (the outer container's payload-size field)
+  was reverse-engineered from two real files' own declared-vs-actual byte lengths, not from
+  documentation or engine source — plausible, not certain. The UI's own button for this is
+  labeled "expr." with a red border on purpose; try it, don't assume it.
 - **Specular→roughness mapping is a best-effort heuristic, not a verified one.** Both 3D
   viewers now derive a `_Specular_` texture name (same convention as `_Normal_`) and convert
   its luminance to a roughness map (`lib/roughness.ts`) instead of a flat hardcoded value —

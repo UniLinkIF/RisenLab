@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { Lang } from "../lib/i18n";
 import type { ActorEntry, BoneMotion, LibraryEntry, MotionEntry, SkeletonNode, SkinnedMeshData } from "../lib/types";
-import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, exportMotionPatch, exportMotionPatchBatch, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
+import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, exportDoubleRateMotionPatch, exportMotionPatch, exportMotionPatchBatch, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import { getActorOrientation, setActorOrientation } from "../lib/actorOrientation";
@@ -206,6 +206,28 @@ export default function Animations({ lang }: Props) {
         (lang === "uk" ? "Патч зібрано: " : "Patch built: ") +
           patch +
           (lang === "uk" ? " — встанови його в гру в Налаштуваннях (🎮)" : " — install it via Settings (🎮)"),
+      );
+    } catch (e) {
+      setPatchMessage(String(e));
+    } finally {
+      setExportingPatch(false);
+    }
+  }
+
+  // The real, exportable 60fps (xmot::rebuild_motion_file) — genuinely resizes the .xmot on
+  // disk, unlike the doubleRate preview toggle above. UNVERIFIED IN-GAME (see the Rust doc
+  // comment) — separate button, separate honest label, so it's never confused with the
+  // already-proven smooth/expressiveness/secondary/sharpness export path.
+  async function handleExportDoubleRatePatch() {
+    if (!selectedMotion || skeletonNodes.length === 0) return;
+    setExportingPatch(true);
+    setPatchMessage(null);
+    try {
+      const patch = await exportDoubleRateMotionPatch(selectedMotion.archivePath, selectedMotion.entryPath, skeletonNodes.map((n) => n.name));
+      setPatchMessage(
+        (lang === "uk" ? "⚠ Експериментальний 60fps-патч зібрано: " : "⚠ Experimental 60fps patch built: ") +
+          patch +
+          (lang === "uk" ? " — не перевірено в грі, встанови на свій ризик" : " — unverified in-game, install at your own risk"),
       );
     } catch (e) {
       setPatchMessage(String(e));
@@ -788,6 +810,30 @@ export default function Animations({ lang }: Props) {
                   <input type="checkbox" checked={doubleRate} disabled={tracksLoading} onChange={(e) => setDoubleRate(e.target.checked)} />
                   {lang === "uk" ? "🎬 60fps (тільки перегляд)" : "🎬 60fps (preview only)"}
                 </label>
+                {doubleRate ? (
+                  <button
+                    onClick={handleExportDoubleRatePatch}
+                    disabled={exportingPatch}
+                    title={
+                      lang === "uk"
+                        ? "Реальний патч зі зміненою кількістю ключів (а не просто перегляд) — формат щойно розшифрований, НЕ перевірено в грі."
+                        : "A real patch with a genuinely changed key count (not just preview) — the format was just reverse-engineered, NOT verified in-game."
+                    }
+                    style={{
+                      width: "100%",
+                      marginTop: 6,
+                      padding: "6px 10px",
+                      borderRadius: 10,
+                      background: "var(--bg2)",
+                      border: "1px solid var(--red)",
+                      font: "600 10.5px system-ui",
+                      color: exportingPatch ? "var(--text-faint)" : "var(--red)",
+                      cursor: exportingPatch ? "wait" : "pointer",
+                    }}
+                  >
+                    {lang === "uk" ? "⚠ 💾 Реальний 60fps-патч (експер.)" : "⚠ 💾 Real 60fps patch (exp.)"}
+                  </button>
+                ) : null}
 
                 {previewActive ? (
                   <>

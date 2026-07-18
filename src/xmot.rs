@@ -34,7 +34,7 @@
 //! found (defensive against not-yet-seen clip variants; validated identical on all clips
 //! where counts are present).
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
 const TAIL_BLOCK_LEN: usize = 132;
@@ -338,6 +338,144 @@ pub fn patch_motion_keys(data: &[u8], edits: &[BoneMotion]) -> Result<Vec<u8>> {
             }
         }
     }
+    Ok(out)
+}
+
+/// Byte locations of ALL FOUR keyframe channels for one bone record, plus the record's own
+/// header — the extended counterpart of `RecordLocation` needed to REBUILD (not just in-place
+/// patch) a `._xmot` file, since growing/shrinking a channel's key count shifts every later
+/// record's absolute byte offsets.
+#[derive(Debug, Clone, PartialEq)]
+struct FullRecordLocation {
+    bone_name: String,
+    header_off: usize,
+    num_scale: u32,
+    scale_off: usize,
+    num_scale_rot: u32,
+    scale_rot_off: usize,
+    /// One past this record's last byte (`scale_rot_off + num_scale_rot*20`).
+    record_end: usize,
+}
+
+/// Locates every requested bone's record, sorted by file position. Unlike `locate_records`,
+/// bails loudly (rather than silently under-covering the file) if the located records don't
+/// form one CONTIGUOUS run with no gaps — a real symptom of `bone_names` missing a bone that
+/// genuinely has a record in this file, which `rebuild_motion_file` cannot safely tolerate
+/// (an un-located record's bytes would simply be dropped from the rebuilt output).
+fn locate_full_records(data: &[u8], bone_names: &[String]) -> Result<Vec<FullRecordLocation>> {
+    let Some(xsm_off) = data.windows(4).position(|w| w == b"XSM ") else {
+        bail!("xmot: not a recognized legacy motion clip (no 'XSM ' magic found)");
+    };
+    let payload_start = xsm_off + 8;
+    let mut out = Vec::new();
+    for bone_name in bone_names {
+        let Some(name_off) = find_length_prefixed_name(data, bone_name, payload_start) else { continue };
+        let Some([num_pos, num_rot, num_scale, num_scale_rot]) = read_header_key_counts(data, name_off) else {
+            continue;
+        };
+        let Some(header_off) = name_off.checked_sub(TAIL_BLOCK_LEN) else { continue };
+        let pos_off = name_off + 4 + bone_name.len();
+        let rot_off = pos_off + num_pos as usize * 16;
+        let scale_off = rot_off + num_rot as usize * 20;
+        let scale_rot_off = scale_off + num_scale as usize * 16;
+        let record_end = scale_rot_off + num_scale_rot as usize * 20;
+        if record_end > data.len() {
+            bail!("xmot: record for '{bone_name}' extends past end of file");
+        }
+        out.push(FullRecordLocation { bone_name: bone_name.clone(), header_off, num_scale, scale_off, num_scale_rot, scale_rot_off, record_end });
+    }
+    out.sort_by_key(|r| r.header_off);
+    if let Some(first) = out.first() {
+        let mut cursor = first.header_off;
+        for loc in &out {
+            if loc.header_off != cursor {
+                bail!(
+                    "xmot: records aren't contiguous (gap/overlap at byte {cursor}, next record '{}' starts at {}) — bone_names is likely missing a real bone in this file",
+                    loc.bone_name,
+                    loc.header_off
+                );
+            }
+            cursor = loc.record_end;
+        }
+        if cursor != data.len() {
+            bail!("xmot: located records end at byte {cursor} but the file is {} bytes — bone_names is likely missing a real bone in this file", data.len());
+        }
+    }
+    Ok(out)
+}
+
+/// Rebuilds an ENTIRE `._xmot` payload from `edits`, unlike `patch_motion_keys` allowing each
+/// bone's position/rotation key COUNT to differ from the original — what makes a real, resized
+/// export possible (e.g. `resample_double_rate`'s doubled key count for a real 60fps patch,
+/// not just the in-app preview). Every record is walked in FILE order (`locate_full_records`,
+/// not `edits`' order — a caller-driven order could scramble a real file's byte layout) and
+/// re-emitted with a corrected header (the four key-count fields at header offsets 112-124) +
+/// name + the edit's position/rotation keys; a bone with no matching edit keeps its ORIGINAL
+/// record bytes verbatim. Scale/scale-rotation channels are ALWAYS copied through byte-for-byte
+/// from the source file, for every bone — this writer only resizes position/rotation and has
+/// no opinion on the other two.
+///
+/// Everything before the first record (the magic, the outer `GR01MO01` container header, and
+/// the exporter-metadata sub-chunk — tool/date/source-`.max`-path strings, empirically none of
+/// it dependent on bone-record byte length) is copied unchanged EXCEPT one field: the outer
+/// container's own declared payload byte count, the 4 bytes immediately before the `"XSM "`
+/// magic. Real files set that field to `total_file_len - xsm_offset` (confirmed on real Ogre
+/// and Wolf clips of two very different sizes), and it becomes a LIE — the file would
+/// under/over-declare its own real length — the instant the payload's total size changes.
+/// Patched here to the new true value; this is the one piece of the "not-yet-decoded chunk
+/// wrapper" that resizing genuinely needed decoded.
+///
+/// Self-verifying by construction: rebuilding with `edits` set to exactly what `parse_motion`
+/// read back out of `data` must reproduce `data` byte-for-byte (see the round-trip test) —
+/// this is the same "byte-identical no-op" discipline `smooth_tracks`/`patch_motion_keys`
+/// already rely on for the in-place path.
+pub fn rebuild_motion_file(data: &[u8], bone_names: &[String], edits: &[BoneMotion]) -> Result<Vec<u8>> {
+    let Some(xsm_off) = data.windows(4).position(|w| w == b"XSM ") else {
+        bail!("xmot: not a recognized legacy motion clip (no 'XSM ' magic found)");
+    };
+    let size_field_off = xsm_off
+        .checked_sub(4)
+        .ok_or_else(|| anyhow!("xmot: no room before 'XSM ' for the container's payload-size field"))?;
+
+    let locations = locate_full_records(data, bone_names)?;
+    let prefix_end = locations.first().map(|r| r.header_off).unwrap_or(data.len());
+
+    let mut out = Vec::with_capacity(data.len());
+    out.extend_from_slice(&data[..prefix_end]);
+
+    for loc in &locations {
+        let Some(edit) = edits.iter().find(|e| e.bone_name == loc.bone_name) else {
+            out.extend_from_slice(&data[loc.header_off..loc.record_end]);
+            continue;
+        };
+
+        let mut header = data[loc.header_off..loc.header_off + TAIL_BLOCK_LEN].to_vec();
+        let counts = [edit.position_keys.len() as u32, edit.rotation_keys.len() as u32, loc.num_scale, loc.num_scale_rot];
+        for (i, count) in counts.into_iter().enumerate() {
+            let off = HEADER_KEY_COUNTS_OFFSET + i * 4;
+            header[off..off + 4].copy_from_slice(&count.to_le_bytes());
+        }
+        out.extend_from_slice(&header);
+        out.extend_from_slice(&(loc.bone_name.len() as u32).to_le_bytes());
+        out.extend_from_slice(loc.bone_name.as_bytes());
+        for key in &edit.position_keys {
+            for v in key {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        for key in &edit.rotation_keys {
+            for v in key {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        // Scale + scale-rotation: verbatim, untouched, for every bone regardless of whether it
+        // had a position/rotation edit.
+        out.extend_from_slice(&data[loc.scale_off..loc.scale_off + loc.num_scale as usize * 16]);
+        out.extend_from_slice(&data[loc.scale_rot_off..loc.scale_rot_off + loc.num_scale_rot as usize * 20]);
+    }
+
+    let payload_size = u32::try_from(out.len() - xsm_off).context("xmot: rebuilt payload too large for its u32 size field")?;
+    out[size_field_off..size_field_off + 4].copy_from_slice(&payload_size.to_le_bytes());
     Ok(out)
 }
 
@@ -1136,5 +1274,100 @@ mod tests {
         assert!(out[0].rotation_keys.is_empty());
         assert_eq!(out[1].position_keys, single.position_keys, "a single key has no pair to interpolate — passes through");
         assert_eq!(out[1].rotation_keys, single.rotation_keys);
+    }
+
+    /// Wraps a synthetic "XSM "-starting motion body in a minimal fake outer container
+    /// matching the REAL discovered layout — `[u32 count=1][u32 payload_size]["XSM "...body]`
+    /// — empirically confirmed against two real, very differently-sized game clips (see
+    /// `rebuild_motion_file`'s doc comment). Just enough structure for the size-field patch to
+    /// have somewhere real to land.
+    fn wrap_in_container(xsm_body: &[u8]) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&1u32.to_le_bytes());
+        buf.extend_from_slice(&(xsm_body.len() as u32).to_le_bytes());
+        buf.extend_from_slice(xsm_body);
+        buf
+    }
+
+    /// Two-bone synthetic file: Bone_A has position+rotation+scale+scale-rotation keys (so
+    /// verbatim scale/scale-rotation passthrough is actually exercised), Bone_B has rotation
+    /// only. Mirrors a real file closely enough for `rebuild_motion_file`'s record-walking to
+    /// behave exactly as it would on a real one.
+    fn synthetic_container_two_bones() -> Vec<u8> {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"XSM ");
+        body.extend_from_slice(&[1, 1, 0, 0]);
+        push_header_with_counts(&mut body, 2, 2, 1, 1);
+        push_name(&mut body, "Bone_A");
+        push_pos_key(&mut body, 1.0, 2.0, 3.0, 0.0);
+        push_pos_key(&mut body, 1.5, 2.5, 3.5, 0.04);
+        push_rot_key(&mut body, 0.0, 0.0, 0.0, 1.0, 0.0);
+        push_rot_key(&mut body, 0.1, 0.0, 0.0, 0.99499, 0.04);
+        push_pos_key(&mut body, 1.0, 1.0, 1.0, 0.0); // scale key: same wire shape as a pos key
+        push_rot_key(&mut body, 0.001, 0.0, 0.0, 0.9999995, 0.0); // scale-rot key: same shape as rot
+        push_header_with_counts(&mut body, 0, 3, 0, 0);
+        push_name(&mut body, "Bone_B");
+        push_rot_key(&mut body, 0.0, 0.0, 0.0, 1.0, 0.0);
+        push_rot_key(&mut body, 0.2, 0.0, 0.0, 0.9798, 0.04);
+        push_rot_key(&mut body, 0.0, 0.0, 0.0, 1.0, 0.08);
+        wrap_in_container(&body)
+    }
+
+    #[test]
+    fn rebuild_motion_file_with_original_edits_is_byte_identical() {
+        let data = synthetic_container_two_bones();
+        let names = vec!["Bone_A".to_string(), "Bone_B".to_string()];
+        let edits = parse_motion(&data, &names).unwrap();
+        let rebuilt = rebuild_motion_file(&data, &names, &edits).unwrap();
+        assert_eq!(rebuilt, data, "rebuilding with exactly what was parsed out must reproduce the file byte-for-byte");
+    }
+
+    #[test]
+    fn rebuild_motion_file_with_no_edits_copies_every_record_verbatim() {
+        let data = synthetic_container_two_bones();
+        let names = vec!["Bone_A".to_string(), "Bone_B".to_string()];
+        let rebuilt = rebuild_motion_file(&data, &names, &[]).unwrap();
+        assert_eq!(rebuilt, data);
+    }
+
+    #[test]
+    fn rebuild_motion_file_grows_key_counts_and_fixes_up_the_size_field() {
+        let data = synthetic_container_two_bones();
+        let names = vec!["Bone_A".to_string(), "Bone_B".to_string()];
+        let original = parse_motion(&data, &names).unwrap();
+        let doubled = resample_double_rate(&original);
+        let rebuilt = rebuild_motion_file(&data, &names, &doubled).unwrap();
+
+        assert!(rebuilt.len() > data.len(), "doubled key counts must produce a bigger file");
+
+        // The container's size field (bytes 4..8: count field occupies 0..4) must equal the
+        // true remaining length after "XSM ".
+        let xsm_off = rebuilt.windows(4).position(|w| w == b"XSM ").unwrap();
+        let declared = u32::from_le_bytes(rebuilt[xsm_off - 4..xsm_off].try_into().unwrap());
+        assert_eq!(declared as usize, rebuilt.len() - xsm_off, "size field must reflect the REBUILT length, not the original");
+
+        // Must still be readable, with the expected doubled counts, by the normal parser.
+        let reparsed = parse_motion(&rebuilt, &names).unwrap();
+        assert_eq!(reparsed[0].position_keys.len(), 3, "2 keys -> 1 midpoint inserted -> 3");
+        assert_eq!(reparsed[0].rotation_keys.len(), 3);
+        assert_eq!(reparsed[1].position_keys.len(), 0, "Bone_B never had position keys");
+        assert_eq!(reparsed[1].rotation_keys.len(), 5, "3 keys -> 2 midpoints inserted -> 5");
+
+        // Scale + scale-rotation are untouched by resample_double_rate — the rebuilt file's
+        // scale channel must still read back exactly as it did originally (scale-rotation
+        // itself isn't exposed by parse_motion, but if it were corrupted the byte-length
+        // arithmetic that got us a successful re-parse at all would already be wrong).
+        assert_eq!(reparsed[0].scale_keys, original[0].scale_keys);
+    }
+
+    #[test]
+    fn rebuild_motion_file_rejects_an_incomplete_bone_list_instead_of_silently_dropping_bytes() {
+        let data = synthetic_container_two_bones();
+        // Bone_B genuinely has a record in this file but isn't in the list — locate_full_records
+        // must notice the resulting gap and refuse, not quietly build a truncated file.
+        let names = vec!["Bone_A".to_string()];
+        let edits = parse_motion(&data, &names).unwrap();
+        let err = rebuild_motion_file(&data, &names, &edits).unwrap_err();
+        assert!(err.to_string().contains("contiguous") || err.to_string().contains("missing"), "{err}");
     }
 }

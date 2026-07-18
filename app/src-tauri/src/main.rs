@@ -399,6 +399,14 @@ fn export_motion_patch(
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command(rename_all = "camelCase")]
+fn export_double_rate_motion_patch(state: State<AppState>, archive_path: String, entry_path: String, bone_names: Vec<String>) -> Result<String, String> {
+    let patch_dir = PathBuf::from(state.settings.lock().unwrap().patch_dir.clone());
+    batch::export_double_rate_motion_patch(&PathBuf::from(archive_path), &entry_path, &bone_names, &patch_dir, "compiled")
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Serialize)]
 struct MotionPatchBatchResult {
     patch: String,
@@ -470,6 +478,7 @@ fn main() {
             uninstall_patches,
             export_motion_patch,
             export_motion_patch_batch,
+            export_double_rate_motion_patch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RisenLab UI");

@@ -491,6 +491,21 @@ export function risenlabDevApi(): Plugin {
             ]);
             return sendJson(res, 200, { patch: JSON.parse(stdout) });
           }
+          if (url.pathname === "/api/export-double-rate-motion-patch" && req.method === "POST") {
+            // The real, exportable 60fps (xmot::rebuild_motion_file) — genuinely resized, not
+            // the in-place-patch-only preview `motion-tracks`'s doubleRate flag drives.
+            // UNVERIFIED IN-GAME — see batch::export_double_rate_motion_patch's doc comment.
+            const { archivePath, entryPath, boneNames } = await readJsonBody(req);
+            const settings = await loadSettings();
+            const { stdout } = await runCli([
+              "export-double-rate-motion-patch",
+              archivePath,
+              entryPath,
+              JSON.stringify(boneNames),
+              settings.patchDir,
+            ]);
+            return sendJson(res, 200, { patch: JSON.parse(stdout) });
+          }
           if (url.pathname === "/api/backup" && req.method === "POST") {
             // Everything lives under one project root (outputDir/patchDir/reviewHtml are all
             // subpaths of it by default) — back up that whole root to a timestamped sibling
