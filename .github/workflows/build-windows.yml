@@ -35,3 +35,10 @@ jobs:
             app/src-tauri/target/release/bundle/nsis/*.exe
             app/src-tauri/target/release/bundle/msi/*.msi
           if-no-files-found: error
+
+      - name: Upload portable exe (no installer)
+        uses: actions/upload-artifact@v4
+        with:
+          name: RisenLab-portable
+          path: app/src-tauri/target/release/risenlab-ui.exe
+          if-no-files-found: error
