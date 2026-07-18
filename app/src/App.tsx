@@ -11,6 +11,7 @@ import Animations from "./screens/Animations";
 import AiCompare from "./screens/AiCompare";
 import ErrorLog from "./components/ErrorLog";
 import Settings from "./screens/Settings";
+import Guide from "./screens/Guide";
 
 export default function App() {
   const [lang, setLang] = useState<Lang>("uk");
@@ -91,6 +92,7 @@ export default function App() {
         ) : null}
         {screen === "models" ? <Models lang={lang} onRegenerated={handleRegenerated} onQueueChanged={() => bumpPendingReview(1)} /> : null}
         {screen === "animations" ? <Animations lang={lang} /> : null}
+        {screen === "guide" ? <Guide lang={lang} /> : null}
         {screen === "settings" ? (
           <Settings lang={lang} onLangChange={changeLang} onSettingsSaved={handleSettingsSaved} />
         ) : null}

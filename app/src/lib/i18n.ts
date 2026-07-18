@@ -44,6 +44,7 @@ export interface Strings {
   navLibrary: string;
   navModels: string;
   navAnimations: string;
+  navGuide: string;
   navSettings: string;
 }
 
@@ -87,6 +88,7 @@ const uk: Strings = {
   navLibrary: "Бібліотека",
   navModels: "Моделі",
   navAnimations: "Анімації",
+  navGuide: "Інструкція",
   navSettings: "Налаштування",
 };
 
@@ -130,6 +132,7 @@ const en: Strings = {
   navLibrary: "Library",
   navModels: "Models",
   navAnimations: "Animations",
+  navGuide: "Guide",
   navSettings: "Settings",
 };
 

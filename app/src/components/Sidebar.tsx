@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
 
-export type Screen = "dashboard" | "library" | "models" | "animations" | "settings";
+export type Screen = "dashboard" | "library" | "models" | "animations" | "guide" | "settings";
 
 interface Props {
   active: Screen;
@@ -133,6 +133,24 @@ export default function Sidebar({ active, onNavigate, lang }: Props) {
       </RailButton>
 
       <div style={{ flex: 1 }} />
+
+      <RailButton active={active === "guide"} title={t(lang).navGuide} onClick={() => onNavigate("guide")}>
+        <div
+          style={{
+            width: 16,
+            height: 16,
+            borderRadius: "50%",
+            border: `1.5px solid ${active === "guide" ? "var(--accent)" : "var(--text-faint)"}`,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            font: `700 11px system-ui`,
+            color: active === "guide" ? "var(--accent)" : "var(--text-faint)",
+          }}
+        >
+          ?
+        </div>
+      </RailButton>
 
       <RailButton active={active === "settings"} title={t(lang).navSettings} onClick={() => onNavigate("settings")}>
         <div
