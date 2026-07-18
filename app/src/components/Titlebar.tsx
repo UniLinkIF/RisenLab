@@ -8,6 +8,12 @@ interface Props {
   onLangChange: (l: Lang) => void;
   connected?: boolean;
   centerLabel?: string;
+  /** Textures currently sitting in the review queue with no decision yet. */
+  pendingReviewCount?: number;
+  /** Present (and clickable) whenever navigating to the review queue makes sense from the
+   * current screen — omitted while already on it. Nothing auto-navigates here; this button is
+   * the only way in, by design (see App.tsx). */
+  onOpenReview?: () => void;
 }
 
 function WinButton({ onClick, hoverColor, children }: { onClick: () => void; hoverColor?: string; children: ReactNode }) {
@@ -37,7 +43,7 @@ function WinButton({ onClick, hoverColor, children }: { onClick: () => void; hov
 // The window is borderless (decorations:false) so we draw our own chrome — a small logo
 // mark instead of decorative (non-functional on Windows) macOS traffic lights, plus real
 // working minimize/maximize/close controls since we removed the native ones.
-export default function Titlebar({ lang, onLangChange, connected, centerLabel }: Props) {
+export default function Titlebar({ lang, onLangChange, connected, centerLabel, pendingReviewCount, onOpenReview }: Props) {
   const s = t(lang);
   return (
     <div
@@ -77,6 +83,26 @@ export default function Titlebar({ lang, onLangChange, connected, centerLabel }:
         </>
       ) : null}
       <div style={{ flex: 1 }} />
+      {onOpenReview && pendingReviewCount ? (
+        <button
+          onClick={onOpenReview}
+          title={lang === "uk" ? "Відкрити чергу рев'ю" : "Open the review queue"}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            font: "600 12px system-ui",
+            color: "#fff",
+            background: "var(--accent)",
+            border: "1px solid var(--accent)",
+            padding: "6px 12px",
+            borderRadius: 20,
+            cursor: "pointer",
+          }}
+        >
+          🗂 {lang === "uk" ? `${pendingReviewCount} на рев'ю` : `${pendingReviewCount} to review`}
+        </button>
+      ) : null}
       {connected !== undefined ? (
         <div
           style={{

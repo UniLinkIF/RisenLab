@@ -11,6 +11,12 @@ import DetailPanel from "../components/DetailPanel";
 interface Props {
   lang: Lang;
   onRegenerated: (entry: LibraryEntry) => void;
+  /** Called after each successful regenerate (single or one batch item) — a cheap "the pending
+   * count just changed" ping for App's persistent Titlebar badge, NOT a navigation request. */
+  onQueueChanged: () => void;
+  /** Opens the review queue with no specific entry preferred (starts at the first pending
+   * item) — used by the batch-summary toast, where no single texture is "the" one to jump to. */
+  onOpenReviewQueue: () => void;
 }
 
 // Each grid card fetches its own thumbnail independently (see TextureGrid's Thumb component)
@@ -30,7 +36,7 @@ interface BatchProgress {
   currentName: string | null;
 }
 
-export default function Library({ lang, onRegenerated }: Props) {
+export default function Library({ lang, onRegenerated, onQueueChanged, onOpenReviewQueue }: Props) {
   const s = t(lang);
   const [entries, setEntries] = useState<LibraryEntry[]>([]);
   const [treeKey, setTreeKey] = useState<string | null>(null);
@@ -42,6 +48,11 @@ export default function Library({ lang, onRegenerated }: Props) {
   const [batch, setBatch] = useState<BatchProgress | null>(null);
   const batchCancelled = useRef(false);
   const [error, setError] = useState<string | null>(null);
+  // Non-blocking "landed in the review queue" notices (owner: "не хочу щоб мені відкривало
+  // погодження всіх 1000 які в черзі" — see Models.tsx's identical fix). Neither ever
+  // auto-navigates; both just offer a button the user can ignore.
+  const [genNotice, setGenNotice] = useState<LibraryEntry | null>(null);
+  const [batchDoneNotice, setBatchDoneNotice] = useState<number | null>(null);
 
   useEffect(() => {
     listLibrary()
@@ -64,7 +75,10 @@ export default function Library({ lang, onRegenerated }: Props) {
     try {
       await regenerateTexture(entry.pngRel);
       setStatusByPngRel((prev) => new Map(prev).set(entry.pngRel, "pending"));
-      onRegenerated(entry);
+      onQueueChanged();
+      // Deliberately NO auto-navigation (same fix as Models.tsx) — the result lands in the
+      // review queue quietly, a toast offers the jump.
+      setGenNotice(entry);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -84,6 +98,7 @@ export default function Library({ lang, onRegenerated }: Props) {
     let skipped = 0;
     let failed = 0;
     setError(null);
+    setBatchDoneNotice(null);
     setBatch({ done, total: targets.length, skipped, failed, currentName: null });
     for (const entry of targets) {
       if (batchCancelled.current) break;
@@ -96,7 +111,11 @@ export default function Library({ lang, onRegenerated }: Props) {
       try {
         await regenerateTexture(entry.pngRel);
         setStatusByPngRel((prev) => new Map(prev).set(entry.pngRel, "pending"));
-        onRegenerated(entry);
+        // Cheap local bump only — NOT onRegenerated (that would navigate away, and doing it up
+        // to `targets.length` times in a row is exactly the "1000 textures yanked me into
+        // review while I was busy in Models" bug the owner reported. One summary notice with
+        // an explicit button goes out once the whole batch finishes, below.).
+        onQueueChanged();
         done++;
       } catch {
         // Keep going: one bad texture (or one flaky AI call) must not kill a 200-item run —
@@ -113,10 +132,11 @@ export default function Library({ lang, onRegenerated }: Props) {
           : `Enhanced ${done}, skipped ${skipped}, failed ${failed} — run again to retry the failures.`,
       );
     }
+    if (done > 0) setBatchDoneNotice(done);
   }
 
   return (
-    <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+    <div style={{ flex: 1, display: "flex", minHeight: 0, position: "relative" }}>
       <FolderTree nodes={tree} selectedKey={treeKey} onSelect={setTreeKey} title={s.archives} />
 
       <div style={{ flex: 1, overflow: "auto", padding: "20px 22px", minWidth: 0 }}>
@@ -217,6 +237,79 @@ export default function Library({ lang, onRegenerated }: Props) {
       </div>
 
       <DetailPanel entry={selected} lang={lang} onRegenerate={handleRegenerate} regenerating={regenerating} />
+
+      {genNotice ? (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 14,
+            right: 14,
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            background: "var(--bg1)",
+            border: "1px solid var(--border-strong)",
+            borderRadius: 10,
+            padding: "10px 14px",
+            boxShadow: "0 6px 20px rgba(0,0,0,.4)",
+            font: "500 12px system-ui",
+            color: "var(--text)",
+          }}
+        >
+          {lang === "uk" ? "✓ Додано в чергу рев'ю" : "✓ Added to the review queue"}
+          <button
+            onClick={() => onRegenerated(genNotice)}
+            style={{ padding: "6px 12px", borderRadius: 8, background: "var(--accent)", border: "none", font: "600 11.5px system-ui", color: "#fff" }}
+          >
+            {lang === "uk" ? "Відкрити рев'ю" : "Open review"}
+          </button>
+          <button
+            onClick={() => setGenNotice(null)}
+            style={{ padding: "6px 10px", borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 11.5px system-ui", color: "var(--text-dim)" }}
+          >
+            {lang === "uk" ? "Пізніше" : "Later"}
+          </button>
+        </div>
+      ) : null}
+
+      {batchDoneNotice ? (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 14,
+            right: 14,
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            background: "var(--bg1)",
+            border: "1px solid var(--border-strong)",
+            borderRadius: 10,
+            padding: "10px 14px",
+            boxShadow: "0 6px 20px rgba(0,0,0,.4)",
+            font: "500 12px system-ui",
+            color: "var(--text)",
+          }}
+        >
+          {lang === "uk" ? `✓ Покращено ${batchDoneNotice} — усі в черзі рев'ю` : `✓ Enhanced ${batchDoneNotice} — all in the review queue`}
+          <button
+            onClick={() => {
+              setBatchDoneNotice(null);
+              onOpenReviewQueue();
+            }}
+            style={{ padding: "6px 12px", borderRadius: 8, background: "var(--accent)", border: "none", font: "600 11.5px system-ui", color: "#fff" }}
+          >
+            {lang === "uk" ? "Відкрити рев'ю" : "Open review"}
+          </button>
+          <button
+            onClick={() => setBatchDoneNotice(null)}
+            style={{ padding: "6px 10px", borderRadius: 8, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 11.5px system-ui", color: "var(--text-dim)" }}
+          >
+            {lang === "uk" ? "Пізніше" : "Later"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

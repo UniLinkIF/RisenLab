@@ -13,6 +13,9 @@ interface Props {
   /** Opens the shared review screen (compare slider + approve/reject/regenerate) for a
    * freshly generated texture — the same flow the Library uses. */
   onRegenerated: (entry: LibraryEntry, modelObjUrl?: string | null) => void;
+  /** Called after a successful regenerate — a cheap "the pending count just changed" ping for
+   * App's persistent Titlebar badge, NOT a navigation request. */
+  onQueueChanged: () => void;
 }
 
 const MODES: ViewMode[] = ["textured", "wireframe", "clay", "normalMap"];
@@ -23,7 +26,7 @@ const MODE_LABEL: Record<ViewMode, { uk: string; en: string }> = {
   normalMap: { uk: "Рельєф (normal map)", en: "Relief (normal map)" },
 };
 
-export default function Models({ lang, onRegenerated }: Props) {
+export default function Models({ lang, onRegenerated, onQueueChanged }: Props) {
   const [meshes, setMeshes] = useState<MeshEntry[]>([]);
   const [textures, setTextures] = useState<LibraryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -173,6 +176,7 @@ export default function Models({ lang, onRegenerated }: Props) {
       // Deliberately NO auto-navigation (owner: "мене викидає в погодження текстур... нехай
       // працює у фоні"): the result lands in the review queue quietly, a toast offers the
       // jump — with the model context, so the review's 3D mode still works when taken.
+      onQueueChanged();
       setShowingGenerated(true);
       setGenNotice(diffuseEntry);
     } catch (e) {
