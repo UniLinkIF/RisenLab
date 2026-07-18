@@ -8,27 +8,27 @@ use std::process::Command;
 use anyhow::{bail, Context, Result};
 
 /// Locates `mimicry-helper.exe`. Checked in order: `RISENLAB_MIMICRY_HELPER` env var, next to
-/// this binary's own directory, next to this repo (`../mimicry-helper`, dev layout), then the
-/// known fixed location on this machine — needed because a copy of `risenlab_gui.exe` (e.g. on
-/// the Desktop) has neither a meaningful "current directory" nor "next to the repo" relationship
-/// to the helper.
+/// this binary's own directory (the packaged-install case — ship `mimicry-helper.exe` alongside
+/// `risenlab-ui.exe`/`risenlab.exe`), then next to this repo (`../mimicry-helper`, dev layout).
+/// If none of those exist, returns the "next to this binary" candidate anyway so `run_helper`'s
+/// not-found error reports a path meaningful on WHOEVER's machine is running it — a previous
+/// version fell back to a hardcoded path on the original dev machine, which was silently wrong
+/// (and confusing to debug) for any other install.
 fn helper_exe_path() -> PathBuf {
     if let Ok(p) = std::env::var("RISENLAB_MIMICRY_HELPER") {
         return PathBuf::from(p);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            let candidate = dir.join("mimicry-helper.exe");
-            if candidate.exists() {
-                return candidate;
-            }
+    let next_to_exe = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("mimicry-helper.exe")));
+    if let Some(candidate) = &next_to_exe {
+        if candidate.exists() {
+            return candidate.clone();
         }
     }
     let relative = PathBuf::from("../mimicry-helper/mimicry-helper.exe");
     if relative.exists() {
         return relative;
     }
-    PathBuf::from(r"C:\Users\rusak\Desktop\Claude\mimicry-helper\mimicry-helper.exe")
+    next_to_exe.unwrap_or(relative)
 }
 
 fn run_helper(args: &[&str]) -> Result<()> {

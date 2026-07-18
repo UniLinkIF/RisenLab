@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
 import type { AppSettings, GameCheckResult } from "../lib/types";
@@ -29,6 +29,24 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
     await saveSettings(next);
     onSettingsSaved(next);
   }
+
+  // Free-text inputs (API key, model, path fields) call this on every keystroke — writing
+  // settings.json to disk that often is wasted work. Local state updates immediately (so the
+  // input stays responsive), the actual disk write/onSettingsSaved is debounced.
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function persistDebounced(next: AppSettings) {
+    setSettings(next);
+    if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    saveTimeoutRef.current = setTimeout(() => {
+      saveTimeoutRef.current = null;
+      saveSettings(next).then(() => onSettingsSaved(next));
+    }, 400);
+  }
+  useEffect(() => {
+    return () => {
+      if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
+    };
+  }, []);
 
   async function browse() {
     if (!settings) return;
@@ -125,26 +143,26 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
 
   if (!settings) return null;
 
-  async function browseFolder(setValue: (v: string) => Promise<void>) {
+  async function browseFolder(setValue: (v: string) => void) {
     const path = await pickFolder();
-    if (path) await setValue(path);
+    if (path) setValue(path);
   }
 
-  const pathRows: Array<[string, string, (v: string) => Promise<void>]> = [
+  const pathRows: Array<[string, string, (v: string) => void]> = [
     [
       lang === "uk" ? "Текстури" : "Textures",
       settings.outputDir,
-      (v) => persist({ ...settings, outputDir: v }),
+      (v) => persistDebounced({ ...settings, outputDir: v }),
     ],
     [
       lang === "uk" ? "Патчі" : "Patches",
       settings.patchDir,
-      (v) => persist({ ...settings, patchDir: v }),
+      (v) => persistDebounced({ ...settings, patchDir: v }),
     ],
     [
       lang === "uk" ? "Огляд (HTML)" : "Review (HTML)",
       settings.reviewHtml,
-      (v) => persist({ ...settings, reviewHtml: v }),
+      (v) => persistDebounced({ ...settings, reviewHtml: v }),
     ],
   ];
 
@@ -261,7 +279,7 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               value={settings.aiApiKey ?? ""}
               placeholder={(settings.aiProvider ?? "replicate") === "stability" ? "sk-…" : "r8_…"}
               autoComplete="off"
-              onChange={(e) => persist({ ...settings, aiApiKey: e.target.value.trim() || null })}
+              onChange={(e) => persistDebounced({ ...settings, aiApiKey: e.target.value.trim() || null })}
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
             />
             <div
@@ -291,7 +309,7 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
             <input
               value={settings.aiModel ?? ""}
               placeholder="nightmareai/real-esrgan"
-              onChange={(e) => persist({ ...settings, aiModel: e.target.value.trim() || null })}
+              onChange={(e) => persistDebounced({ ...settings, aiModel: e.target.value.trim() || null })}
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
             />
             {([

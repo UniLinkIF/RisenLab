@@ -4,8 +4,9 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
-import { groupFacesByMaterial } from "../lib/materials";
+import { deriveSpecularName, groupFacesByMaterial } from "../lib/materials";
 import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
+import { specularLuminanceToRoughness } from "../lib/roughness";
 import type { BoneMotion, SkeletonNode, SkinnedMeshData } from "../lib/types";
 
 /** See the matching helper in Model3DViewer.tsx: Genome's normal maps are DXT5-compressed
@@ -22,6 +23,22 @@ function unswizzleNormalTexture(tex: THREE.Texture): void {
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   if (!looksDxt5nmSwizzled(imageData.data)) return;
   reconstructTangentNormalMap(imageData.data);
+  ctx.putImageData(imageData, 0, 0);
+  tex.image = canvas;
+  tex.needsUpdate = true;
+}
+
+/** See the matching helper in Model3DViewer.tsx / lib/roughness.ts. */
+function applySpecularAsRoughness(tex: THREE.Texture): void {
+  const image = tex.image as HTMLImageElement;
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || image.width;
+  canvas.height = image.naturalHeight || image.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.drawImage(image, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  specularLuminanceToRoughness(imageData.data);
   ctx.putImageData(imageData, 0, 0);
   tex.image = canvas;
   tex.needsUpdate = true;
@@ -208,7 +225,20 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
       tex.wrapT = THREE.RepeatWrapping;
       tex.flipY = false;
     };
-    const loadTexturesInto = (target: THREE.MeshStandardMaterial, dUrl: string | null, nUrl: string | null) => {
+    const loadTexturesInto = (target: THREE.MeshStandardMaterial, dUrl: string | null, nUrl: string | null, sUrl?: string | null) => {
+      if (sUrl) {
+        textureLoader.load(
+          sUrl,
+          (tex) => {
+            applySpecularAsRoughness(tex);
+            target.roughnessMap = tex;
+            target.roughness = 1.0;
+            target.needsUpdate = true;
+          },
+          undefined,
+          (err) => markTextureFailed(target, "specular", sUrl, err),
+        );
+      }
       if (dUrl) {
         textureLoader.load(
           dUrl,
@@ -321,13 +351,15 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
           const target = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.75, metalness: 0.1 });
           materialList.push(target);
           if (real?.diffuse || real?.normal) {
+            const specularName = real.diffuse ? deriveSpecularName(real.diffuse) : null;
             Promise.all([
               real.diffuse ? resolveTexture(real.diffuse) : Promise.resolve(null),
               real.normal ? resolveTexture(real.normal) : Promise.resolve(null),
+              specularName ? resolveTexture(specularName) : Promise.resolve(null),
             ])
-              .then(([dUrl, nUrl]) => {
+              .then(([dUrl, nUrl, sUrl]) => {
                 if (disposed) return;
-                if (dUrl || nUrl) loadTexturesInto(target, dUrl, nUrl);
+                if (dUrl || nUrl) loadTexturesInto(target, dUrl, nUrl, sUrl);
                 else loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null);
               })
               .catch(() => loadTexturesInto(target, diffuseUrl ?? null, normalUrl ?? null));

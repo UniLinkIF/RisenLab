@@ -21,6 +21,22 @@ export function deriveNormalName(diffuseName: string): string | null {
   return null;
 }
 
+/** Same convention as `deriveNormalName`, for the `..._Specular_01` textures the real game
+ * archives also ship alongside diffuse/normal (confirmed real name: e.g.
+ * `ItWpn_Axes_01_Specular_01`). Used to turn the flat, one-size-fits-all viewer roughness into
+ * something that at least varies per real material — see `lib/roughness.ts` for the actual
+ * specular→roughness conversion and its accuracy caveat. */
+export function deriveSpecularName(diffuseName: string): string | null {
+  for (const [from, to] of [
+    ["_Diffuse_", "_Specular_"],
+    ["_diffuse_", "_specular_"],
+    ["Diffuse", "Specular"],
+  ] as const) {
+    if (diffuseName.includes(from)) return diffuseName.replace(from, to);
+  }
+  return null;
+}
+
 /** Finds the real library texture for a base name the way the game's own data references it:
  * exact base-name match first (with `findTextureByBaseName`'s `_Ghost` fallback), then with the
  * game's `_S1` (highest-detail stage) suffix appended — actor material names reference e.g.

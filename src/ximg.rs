@@ -128,8 +128,22 @@ pub fn parse(data: &[u8]) -> io::Result<XimgInfo> {
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Width property not found"))?;
     let height_off = find_property_value_offset(data, "Height")
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Height property not found"))?;
-    let width = i32::from_le_bytes(data[width_off..width_off + 4].try_into().unwrap());
-    let height = i32::from_le_bytes(data[height_off..height_off + 4].try_into().unwrap());
+    // Checked reads: `width_off`/`height_off` are real offsets into the property block, but a
+    // truncated/corrupted file can still place one near enough to the end of the buffer that
+    // there aren't 4 more bytes to read — an unchecked slice index there panics the whole CLI
+    // instead of surfacing a clean parse error.
+    let width = i32::from_le_bytes(
+        data.get(width_off..width_off + 4)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Width value truncated"))?
+            .try_into()
+            .unwrap(),
+    );
+    let height = i32::from_le_bytes(
+        data.get(height_off..height_off + 4)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Height value truncated"))?
+            .try_into()
+            .unwrap(),
+    );
 
     Ok(XimgInfo {
         header_const,
@@ -236,6 +250,32 @@ mod tests {
     #[test]
     fn rejects_non_ximg_data() {
         assert!(parse(b"not an ximg file at all").is_err());
+    }
+
+    /// A real (if unlikely) failure mode: `find_property_slot` searches the WHOLE buffer for
+    /// the property name (not just the property block before `dds_offset`), so a truncated or
+    /// adversarial file can still yield a "Width" match near the very end — this must return a
+    /// clean parse error, not panic on an out-of-bounds slice index reading the 4-byte value.
+    #[test]
+    fn truncated_width_value_is_a_parse_error_not_a_panic() {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(MAGIC);
+        buf.extend_from_slice(&40i32.to_le_bytes()); // header_const
+        buf.extend_from_slice(&0i32.to_le_bytes()); // property_block_size (unchecked by parse)
+        buf.extend_from_slice(&20i32.to_le_bytes()); // dds_offset points right after the header
+        buf.extend_from_slice(b"DDS "); // satisfies the dds_offset signature check
+        buf.extend_from_slice(&[0u8; 12]); // padding so the DDS "payload" isn't suspiciously tiny
+        // Height is complete (parse() looks it up too, before either value is read) — only
+        // Width, pushed last, has its declared 4-byte value cut short by 2 bytes.
+        // find_property_slot fully parses name/type/tag/datalen for both (all present), so
+        // both offsets are found; only Width's final value read is short.
+        push_prop(&mut buf, "Height", "int", &64i32.to_le_bytes());
+        push_prop(&mut buf, "Width", "int", &1234i32.to_le_bytes());
+        let short = buf.len() - 2;
+        buf.truncate(short);
+
+        let err = parse(&buf).expect_err("truncated Width value must not panic");
+        assert!(err.to_string().contains("Width"), "error should name the field: {err}");
     }
 
     #[test]

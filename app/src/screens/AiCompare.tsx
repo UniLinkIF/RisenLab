@@ -29,6 +29,28 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   const [sliderPos, setSliderPos] = useState(0.5);
   const draggingRef = useRef(false);
   const sliderBoxRef = useRef<HTMLDivElement | null>(null);
+  // Reject permanently deletes the generated variant server-side (setReviewStatus("rejected")
+  // removes the edited/ file) — a single misclick during a long review binge used to lose a
+  // good AI result for good, with no undo. First click arms a short confirm window instead of
+  // acting immediately; a second click within it actually rejects.
+  const [confirmingReject, setConfirmingReject] = useState(false);
+  const confirmTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  function cancelRejectConfirm() {
+    if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
+    confirmTimeoutRef.current = null;
+    setConfirmingReject(false);
+  }
+
+  function handleRejectClick() {
+    if (!confirmingReject) {
+      setConfirmingReject(true);
+      confirmTimeoutRef.current = setTimeout(cancelRejectConfirm, 4000);
+      return;
+    }
+    cancelRejectConfirm();
+    act("rejected");
+  }
 
   function moveSlider(clientX: number) {
     const box = sliderBoxRef.current?.getBoundingClientRect();
@@ -53,6 +75,9 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   useEffect(() => {
     listLibrary().then(setEntries);
     refreshQueue(initialPngRel);
+    return () => {
+      if (confirmTimeoutRef.current) clearTimeout(confirmTimeoutRef.current);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -71,13 +96,16 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   useEffect(() => {
     setOriginal(null);
     setVariant(null);
+    cancelRejectConfirm();
     if (!current) return;
     readTextureDataUrl(current.pngRel).then(setOriginal);
     readEditedDataUrl(current.pngRel).then(setVariant);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
 
   async function act(status: "approved" | "rejected") {
     if (!current) return;
+    cancelRejectConfirm();
     setBusy(true);
     try {
       await setReviewStatus(current.pngRel, status);
@@ -92,6 +120,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
 
   async function regenerateAgain() {
     if (!current) return;
+    cancelRejectConfirm();
     setBusy(true);
     try {
       await regenerateTexture(current.pngRel);
@@ -107,6 +136,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   }
 
   function skip() {
+    cancelRejectConfirm();
     setIndex((i) => (i + 1) % Math.max(1, queue.length));
   }
 
@@ -262,8 +292,20 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
           {s.skip}
         </button>
         <div style={{ flex: 1 }} />
-        <button disabled={busy} onClick={() => act("rejected")} style={{ padding: "11px 22px", borderRadius: 10, background: "transparent", border: "1px solid var(--red)", font: "700 13px system-ui", color: "var(--red)" }}>
-          {s.reject}
+        <button
+          disabled={busy}
+          onClick={handleRejectClick}
+          title={confirmingReject ? (lang === "uk" ? "Це видалить ШІ-варіант назавжди — тисни ще раз, щоб підтвердити" : "This permanently deletes the AI variant — click again to confirm") : undefined}
+          style={{
+            padding: "11px 22px",
+            borderRadius: 10,
+            background: confirmingReject ? "var(--red)" : "transparent",
+            border: "1px solid var(--red)",
+            font: "700 13px system-ui",
+            color: confirmingReject ? "#fff" : "var(--red)",
+          }}
+        >
+          {confirmingReject ? (lang === "uk" ? "⚠ Точно відхилити?" : "⚠ Really reject?") : s.reject}
         </button>
         <div style={{ width: 1, height: 26, background: "var(--border)", margin: "0 6px" }} />
         <div style={{ font: "500 12px system-ui", color: "var(--text-faint)" }}>{queueCount(queue.length, lang)}</div>

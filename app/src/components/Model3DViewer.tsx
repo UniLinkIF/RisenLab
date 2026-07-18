@@ -4,8 +4,9 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { OBJLoader } from "three/examples/jsm/loaders/OBJLoader.js";
 import { computeFraming } from "../lib/framing";
-import { deriveNormalName } from "../lib/materials";
+import { deriveNormalName, deriveSpecularName } from "../lib/materials";
 import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
+import { specularLuminanceToRoughness } from "../lib/roughness";
 
 /** Genome's normal maps are DXT5-compressed with the X/Y components swizzled into the green
  * and alpha channels (see lib/normalMap.ts) — three.js has no idea about this and reads R/G/B
@@ -24,6 +25,24 @@ function unswizzleNormalTexture(tex: THREE.Texture): void {
   const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
   if (!looksDxt5nmSwizzled(imageData.data)) return;
   reconstructTangentNormalMap(imageData.data);
+  ctx.putImageData(imageData, 0, 0);
+  tex.image = canvas;
+  tex.needsUpdate = true;
+}
+
+/** Real per-material specular-as-roughness (owner audit item, see lib/roughness.ts for the
+ * conversion + its accuracy caveat) — replaces the single flat `roughness: 0.75` every
+ * material used regardless of what it actually was. */
+function applySpecularAsRoughness(tex: THREE.Texture): void {
+  const image = tex.image as HTMLImageElement;
+  const canvas = document.createElement("canvas");
+  canvas.width = image.naturalWidth || image.width;
+  canvas.height = image.naturalHeight || image.height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+  ctx.drawImage(image, 0, 0);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  specularLuminanceToRoughness(imageData.data);
   ctx.putImageData(imageData, 0, 0);
   tex.image = canvas;
   tex.needsUpdate = true;
@@ -165,7 +184,23 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
       tex.flipY = true;
     }
 
-    function loadTexturesInto(material: THREE.MeshStandardMaterial, dUrl: string | null, nUrl: string | null) {
+    function loadTexturesInto(material: THREE.MeshStandardMaterial, dUrl: string | null, nUrl: string | null, sUrl?: string | null) {
+      if (mode === "textured" && sUrl) {
+        textureLoader.load(
+          sUrl,
+          (tex) => {
+            applySpecularAsRoughness(tex);
+            material.roughnessMap = tex;
+            // Let the map fully drive per-pixel roughness instead of also scaling it down —
+            // three.js multiplies the map sample by this scalar.
+            material.roughness = 1.0;
+            material.needsUpdate = true;
+            requestRender();
+          },
+          undefined,
+          (err) => markTextureFailed(material, "specular", sUrl, err),
+        );
+      }
       if (mode === "textured" && dUrl) {
         textureLoader.load(
           dUrl,
@@ -233,11 +268,16 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
           byName.set(materialName, material);
           const target = material;
           const normalName = deriveNormalName(materialName);
-          Promise.all([resolveTexture(materialName), normalName ? resolveTexture(normalName) : Promise.resolve(null)])
-            .then(([dUrl, nUrl]) => {
+          const specularName = deriveSpecularName(materialName);
+          Promise.all([
+            resolveTexture(materialName),
+            normalName ? resolveTexture(normalName) : Promise.resolve(null),
+            specularName ? resolveTexture(specularName) : Promise.resolve(null),
+          ])
+            .then(([dUrl, nUrl, sUrl]) => {
               if (disposed) return;
-              if (dUrl || nUrl) loadTexturesInto(target, dUrl, nUrl ?? normalUrl);
-              else loadTexturesInto(target, diffuseUrl, normalUrl);
+              if (dUrl || nUrl) loadTexturesInto(target, dUrl, nUrl ?? normalUrl, sUrl);
+              else loadTexturesInto(target, diffuseUrl, normalUrl, sUrl);
             })
             .catch(() => loadTexturesInto(target, diffuseUrl, normalUrl));
         }

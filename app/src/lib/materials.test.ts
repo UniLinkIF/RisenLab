@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveNormalName, findTextureEntryForBaseName, groupFacesByMaterial } from "./materials";
+import { deriveNormalName, deriveSpecularName, findTextureEntryForBaseName, groupFacesByMaterial } from "./materials";
 
 describe("deriveNormalName", () => {
   it("maps the real _Diffuse_ -> _Normal_ convention", () => {
@@ -12,6 +12,20 @@ describe("deriveNormalName", () => {
 
   it("returns null when there is no diffuse marker", () => {
     expect(deriveNormalName("EMFX_Default")).toBeNull();
+  });
+});
+
+describe("deriveSpecularName", () => {
+  it("maps the real _Diffuse_ -> _Specular_ convention", () => {
+    expect(deriveSpecularName("ItWpn_Axes_01_Diffuse_01")).toBe("ItWpn_Axes_01_Specular_01");
+  });
+
+  it("handles a trailing Diffuse without underscores", () => {
+    expect(deriveSpecularName("Ani_Monster_Wolf_Body_01_Diffuse")).toBe("Ani_Monster_Wolf_Body_01_Specular");
+  });
+
+  it("returns null when there is no diffuse marker", () => {
+    expect(deriveSpecularName("EMFX_Default")).toBeNull();
   });
 });
 

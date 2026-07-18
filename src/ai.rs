@@ -193,8 +193,34 @@ fn curl(args: &[&str]) -> Result<Vec<u8>> {
     Ok(out.stdout)
 }
 
-fn curl_json(args: &[&str]) -> Result<serde_json::Value> {
-    let bytes = curl(args)?;
+/// Runs `curl` with an `Authorization: Bearer <api_key>` header WITHOUT putting the key on the
+/// command line. A plain `-H "Authorization: Bearer <key>"` argument is briefly visible to
+/// anything that can read this process's argv while curl runs (e.g. Task Manager's "Command
+/// line" column, or any other local process enumerating command lines) — low-severity for a
+/// single-user local tool, but avoidable for free. Same fix as the existing request-body temp
+/// file below, and for the same reason: keep secrets out of argv, put them in a short-lived
+/// file only curl reads (`-K`/`--config`, which supports a `header = "..."` directive).
+/// The `-K` config file's contents: a single `header = "..."` directive carrying the bearer
+/// token. curl's config-file value syntax is a quoted string with `\`/`"` backslash-escaped —
+/// a real API token won't contain either, but escape defensively rather than assume.
+fn bearer_config_contents(api_key: &str) -> String {
+    let escaped = api_key.replace('\\', "\\\\").replace('"', "\\\"");
+    format!("header = \"Authorization: Bearer {escaped}\"\n")
+}
+
+fn curl_with_bearer(api_key: &str, args: &[&str]) -> Result<Vec<u8>> {
+    let config_path = std::env::temp_dir().join(format!("risenlab_ai_auth_{}.cfg", std::process::id()));
+    std::fs::write(&config_path, bearer_config_contents(api_key)).context("writing curl auth config temp file")?;
+    let config_arg = config_path.to_string_lossy().into_owned();
+    let mut full_args = vec!["-K", &config_arg];
+    full_args.extend_from_slice(args);
+    let result = curl(&full_args);
+    let _ = std::fs::remove_file(&config_path);
+    result
+}
+
+fn curl_json_with_bearer(api_key: &str, args: &[&str]) -> Result<serde_json::Value> {
+    let bytes = curl_with_bearer(api_key, args)?;
     serde_json::from_slice(&bytes)
         .with_context(|| format!("decoding Replicate response: {}", String::from_utf8_lossy(&bytes[..bytes.len().min(400)])))
 }
@@ -225,12 +251,10 @@ pub fn enhance_png(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u32) ->
 /// the per-category texture prompt serves as it. Errors come back as JSON (starts with '{'),
 /// success as raw image bytes — that's the discriminator.
 fn enhance_via_stability(cfg: &AiConfig, src_png: &Path, png_rel: &str) -> Result<Vec<u8>> {
-    let auth = format!("Authorization: Bearer {}", cfg.api_key);
     let image_arg = format!("image=@{}", src_png.display());
     let prompt_arg = format!("prompt={}", texture_prompt(png_rel));
-    let out = curl(&[
+    let out = curl_with_bearer(&cfg.api_key, &[
         "-X", "POST",
-        "-H", &auth,
         "-H", "Accept: image/*",
         "-F", &image_arg,
         "-F", &prompt_arg,
@@ -249,7 +273,6 @@ fn enhance_via_stability(cfg: &AiConfig, src_png: &Path, png_rel: &str) -> Resul
 fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u32) -> Result<Vec<u8>> {
     let bytes = std::fs::read(src_png).with_context(|| format!("reading {}", src_png.display()))?;
     let data_uri = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
-    let auth = format!("Authorization: Bearer {}", cfg.api_key);
 
     // Request body → temp file (megabytes of base64 blow past the command-line length limit).
     let body = serde_json::json!({ "input": build_input(&cfg.model, &data_uri, png_rel, scale, cfg.creativity) });
@@ -261,9 +284,8 @@ fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u
     // Replicate's side) — most textures come back in this single round trip. Cold starts
     // fall through to polling below.
     let create_url = format!("https://api.replicate.com/v1/models/{}/predictions", cfg.model);
-    let created = curl_json(&[
+    let created = curl_json_with_bearer(&cfg.api_key, &[
         "-X", "POST",
-        "-H", &auth,
         "-H", "Content-Type: application/json",
         "-H", "Prefer: wait",
         "--data", &body_arg,
@@ -304,13 +326,13 @@ fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u
                     .ok_or_else(|| anyhow!("Replicate response has no poll URL"))?
                     .to_string();
                 std::thread::sleep(Duration::from_secs(2));
-                prediction = curl_json(&["-H", &auth, &poll_url]).context("polling Replicate prediction")?;
+                prediction = curl_json_with_bearer(&cfg.api_key, &[&poll_url]).context("polling Replicate prediction")?;
             }
         }
     }
 
     let url = output_url(&prediction).ok_or_else(|| anyhow!("Replicate prediction has no output image"))?;
-    let out = curl(&["-L", "-H", &auth, &url]).context("downloading enhanced image")?;
+    let out = curl_with_bearer(&cfg.api_key, &["-L", &url]).context("downloading enhanced image")?;
     if out.is_empty() {
         bail!("Replicate returned an empty image");
     }
@@ -397,5 +419,20 @@ mod tests {
         assert_eq!(output_url(&a).as_deref(), Some("https://x/1.png"));
         let none = serde_json::json!({"status": "failed"});
         assert!(output_url(&none).is_none());
+    }
+
+    #[test]
+    fn bearer_config_never_contains_the_bare_header_flag_style_and_carries_the_real_key() {
+        let contents = bearer_config_contents("r8_realkeyvalue123");
+        assert_eq!(contents, "header = \"Authorization: Bearer r8_realkeyvalue123\"\n");
+        // The whole point: this goes in a file curl reads with `-K`, never on argv/the command
+        // line curl.exe itself is launched with — nothing to assert on argv here since that's
+        // exactly the point of NOT constructing a `-H "..."` string for the key anymore.
+    }
+
+    #[test]
+    fn bearer_config_escapes_quotes_and_backslashes_in_the_key() {
+        let contents = bearer_config_contents(r#"weird\key"with"quotes"#);
+        assert_eq!(contents, "header = \"Authorization: Bearer weird\\\\key\\\"with\\\"quotes\"\n");
     }
 }
