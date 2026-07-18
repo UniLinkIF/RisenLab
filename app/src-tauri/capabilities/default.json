@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default permissions for RisenLab's main window — this app has no capabilities file at all, so every built-in Tauri API call (window close/minimize/maximize, the custom titlebar's drag region) silently fails with no visible error: custom #[tauri::command]s (everything the app actually does — textures/models/animations/settings) are always callable regardless of capabilities, but the close (X) button specifically calls the built-in @tauri-apps/api/window API, which Tauri v2 permission-gates.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-start-dragging"
+  ]
+}
