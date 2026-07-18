@@ -400,6 +400,304 @@ pub fn smooth_tracks(tracks: &[BoneMotion], strength: f32) -> Vec<BoneMotion> {
         .collect()
 }
 
+/// Bone-name-based role used by the local "animation quality" transforms below
+/// (`boost_expressiveness`/`secondary_motion`). Purely name-pattern based: this game's rig
+/// consistently encodes anatomy in bone names (confirmed on the real Wolf/Ogre skeletons —
+/// `Bone_Left_Leg_Hip_1`, `Bone_ClothBack_ClothBack_1`, `Bone_Tail1`, ...), so no hierarchy
+/// walk is needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoneRole {
+    /// Root motion, legs, feet, hips — must stay untouched or the character slides/clips
+    /// through the ground (the owner's explicit ask: "ноги/корінь не чіпаю").
+    Locomotion,
+    /// Tails, cloth, ears, hair, eyebrows, belts — loose appendages that read better with a
+    /// delayed, exaggerated follow-through (`secondary_motion`) than a straight boost.
+    Secondary,
+    /// Everything else (spine, arms, hands, head, torso) — safe to amplify in place.
+    Primary,
+}
+
+const LOCOMOTION_TOKENS: [&str; 5] = ["root", "leg", "foot", "toe", "hip"];
+const SECONDARY_TOKENS: [&str; 6] = ["tail", "cloth", "ear", "hair", "brow", "belt"];
+
+/// Classifies a bone by its real naming convention. Matches whole underscore-delimited
+/// tokens (after stripping trailing digits, e.g. `"Tail1"` -> `"tail"`) rather than raw
+/// substrings, so e.g. a hypothetical "Beard" bone wouldn't false-positive on "ear".
+pub fn classify_bone(name: &str) -> BoneRole {
+    let tokens: Vec<String> = name
+        .split('_')
+        .map(|t| t.to_lowercase())
+        .map(|t| t.trim_end_matches(|c: char| c.is_ascii_digit()).to_string())
+        .collect();
+    if tokens.iter().any(|t| LOCOMOTION_TOKENS.contains(&t.as_str())) {
+        BoneRole::Locomotion
+    } else if tokens.iter().any(|t| SECONDARY_TOKENS.iter().any(|k| t.starts_with(k))) {
+        BoneRole::Secondary
+    } else {
+        BoneRole::Primary
+    }
+}
+
+/// Spherical linear interpolation between two (hemisphere-aligned) unit quaternions, valid
+/// for `t` outside `0.0..=1.0` too — extrapolating past `q1` (t>1) or before `q0` (t<0) along
+/// the same great circle. Used to push a key's rotation further away from a reference (e.g.
+/// the track's mean pose) by a fixed proportion, which is what "amplify this bone's motion"
+/// means for rotations.
+fn slerp_quat(q0: [f32; 4], q1: [f32; 4], t: f32) -> [f32; 4] {
+    let mut b = q1;
+    let mut dot: f32 = (0..4).map(|c| q0[c] * b[c]).sum();
+    if dot < 0.0 {
+        for v in b.iter_mut() {
+            *v = -*v;
+        }
+        dot = -dot;
+    }
+    let dot = dot.clamp(-1.0, 1.0);
+    let mut r = if dot > 0.9995 {
+        // Nearly parallel: the acos/sin formula below loses precision, linear extrapolation
+        // is indistinguishable at this angle.
+        let mut lin = [0.0f32; 4];
+        for c in 0..4 {
+            lin[c] = q0[c] + (b[c] - q0[c]) * t;
+        }
+        lin
+    } else {
+        let theta0 = dot.acos();
+        let sin_theta0 = theta0.sin();
+        let theta = theta0 * t;
+        let s0 = (theta0 - theta).sin() / sin_theta0;
+        let s1 = theta.sin() / sin_theta0;
+        let mut out = [0.0f32; 4];
+        for c in 0..4 {
+            out[c] = q0[c] * s0 + b[c] * s1;
+        }
+        out
+    };
+    let norm = r.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 1e-6 {
+        for v in r.iter_mut() {
+            *v /= norm;
+        }
+    }
+    r
+}
+
+/// The track's own spherical-ish mean rotation: every key hemisphere-aligned to the first
+/// key, then component-averaged and renormalized. A cheap standard approximation (exact for
+/// keys within one hemisphere of each other, true for a single bone's rotations across one
+/// clip in practice) — good enough as the "average pose" reference `boost_expressiveness`
+/// amplifies deviation away from.
+fn track_mean_quat(keys: &[[f32; 5]]) -> Option<[f32; 4]> {
+    let reference = keys.first().map(|k| [k[0], k[1], k[2], k[3]])?;
+    let mut sum = [0.0f32; 4];
+    for k in keys {
+        let mut q = [k[0], k[1], k[2], k[3]];
+        let dot: f32 = (0..4).map(|c| q[c] * reference[c]).sum();
+        if dot < 0.0 {
+            for v in q.iter_mut() {
+                *v = -*v;
+            }
+        }
+        for c in 0..4 {
+            sum[c] += q[c];
+        }
+    }
+    let norm = sum.iter().map(|v| v * v).sum::<f32>().sqrt();
+    (norm > 1e-6).then(|| [sum[0] / norm, sum[1] / norm, sum[2] / norm, sum[3] / norm])
+}
+
+fn track_mean_vec3(keys: &[[f32; 4]]) -> Option<[f32; 3]> {
+    if keys.is_empty() {
+        return None;
+    }
+    let mut sum = [0.0f32; 3];
+    for k in keys {
+        for c in 0..3 {
+            sum[c] += k[c];
+        }
+    }
+    let n = keys.len() as f32;
+    Some([sum[0] / n, sum[1] / n, sum[2] / n])
+}
+
+/// "💪 Виразність" — pushes every `Primary`-role bone's keys further from that bone's own
+/// average pose by `amount` (0.25 = 25% further, the owner's requested +20-30% range).
+/// `Locomotion` bones (legs/root/feet) are left untouched so footwork/root motion doesn't
+/// drift or make the character slide; `Secondary` bones are handled by `secondary_motion`
+/// instead. Times are never touched.
+pub fn boost_expressiveness(tracks: &[BoneMotion], amount: f32) -> Vec<BoneMotion> {
+    let amount = amount.max(0.0);
+    if amount == 0.0 {
+        return tracks.to_vec();
+    }
+    tracks
+        .iter()
+        .map(|t| {
+            if classify_bone(&t.bone_name) != BoneRole::Primary {
+                return t.clone();
+            }
+            let mut out = t.clone();
+            if let Some(mean) = track_mean_quat(&t.rotation_keys) {
+                for (i, k) in t.rotation_keys.iter().enumerate() {
+                    let q = slerp_quat(mean, [k[0], k[1], k[2], k[3]], 1.0 + amount);
+                    out.rotation_keys[i] = [q[0], q[1], q[2], q[3], k[4]];
+                }
+            }
+            if let Some(mean) = track_mean_vec3(&t.position_keys) {
+                for (i, k) in t.position_keys.iter().enumerate() {
+                    let mut p = [0.0f32; 4];
+                    for c in 0..3 {
+                        p[c] = mean[c] + (k[c] - mean[c]) * (1.0 + amount);
+                    }
+                    p[3] = k[3];
+                    out.position_keys[i] = p;
+                }
+            }
+            out
+        })
+        .collect()
+}
+
+/// "🌊 Вторинний рух" — for `Secondary`-role bones only (tails, cloth, ears, hair, belts):
+/// each key's VALUE is replaced by the value `lag_keys` keys earlier in the same track (a
+/// classic animation follow-through: the appendage lags behind the body it's attached to),
+/// then additionally pushed `amount` further from the track's mean pose so the lag actually
+/// reads on screen instead of just looking like reduced motion. The first `lag_keys` keys
+/// have nothing earlier to copy, so they keep their own value. Times are never touched.
+pub fn secondary_motion(tracks: &[BoneMotion], lag_keys: usize, amount: f32) -> Vec<BoneMotion> {
+    if lag_keys == 0 && amount <= 0.0 {
+        return tracks.to_vec();
+    }
+    tracks
+        .iter()
+        .map(|t| {
+            if classify_bone(&t.bone_name) != BoneRole::Secondary {
+                return t.clone();
+            }
+            let mut out = t.clone();
+            let mean_q = track_mean_quat(&t.rotation_keys);
+            for i in 0..t.rotation_keys.len() {
+                let src = t.rotation_keys[i.saturating_sub(lag_keys)];
+                let q = match mean_q {
+                    Some(mean) => slerp_quat(mean, [src[0], src[1], src[2], src[3]], 1.0 + amount),
+                    None => [src[0], src[1], src[2], src[3]],
+                };
+                out.rotation_keys[i] = [q[0], q[1], q[2], q[3], t.rotation_keys[i][4]];
+            }
+            let mean_p = track_mean_vec3(&t.position_keys);
+            for i in 0..t.position_keys.len() {
+                let src = t.position_keys[i.saturating_sub(lag_keys)];
+                let p3 = match mean_p {
+                    Some(mean) => {
+                        let mut v = [0.0f32; 3];
+                        for c in 0..3 {
+                            v[c] = mean[c] + (src[c] - mean[c]) * (1.0 + amount);
+                        }
+                        v
+                    }
+                    None => [src[0], src[1], src[2]],
+                };
+                out.position_keys[i] = [p3[0], p3[1], p3[2], t.position_keys[i][3]];
+            }
+            out
+        })
+        .collect()
+}
+
+/// "⚡ Різкість ударів" — redistributes every bone's key TIMES (values untouched) across an
+/// ease-out curve so the same poses play out slower early (windup) and faster late (strike):
+/// `t' = D * (t/D)^p` with `p = 1 - sharpness*0.6` and `D` the clip's overall duration (shared
+/// across all bones so they stay in sync with each other). `sharpness` 0..1, 0 = untouched.
+/// Key count and clip duration are preserved exactly (`t=0 -> t'=0`, `t=D -> t'=D`), which is
+/// required: `patch_motion_keys` can only patch VALUES in place at a fixed key count, and here
+/// the "value" being patched is the time field itself — see its doc comment.
+pub fn retime_attack(tracks: &[BoneMotion], sharpness: f32) -> Vec<BoneMotion> {
+    let s = sharpness.clamp(0.0, 1.0);
+    if s == 0.0 {
+        return tracks.to_vec();
+    }
+    let duration = tracks.iter().map(|t| t.duration()).fold(0.0f32, f32::max);
+    if duration <= 0.0 {
+        return tracks.to_vec();
+    }
+    let p = 1.0 - s * 0.6;
+    let warp = |t: f32| -> f32 {
+        let u = (t / duration).clamp(0.0, 1.0);
+        duration * u.powf(p)
+    };
+    tracks
+        .iter()
+        .map(|t| {
+            let mut out = t.clone();
+            for k in out.position_keys.iter_mut() {
+                k[3] = warp(k[3]);
+            }
+            for k in out.rotation_keys.iter_mut() {
+                k[4] = warp(k[4]);
+            }
+            out
+        })
+        .collect()
+}
+
+/// Applies whichever of the three "animation quality" transforms above are non-zero, in a
+/// fixed order (amplitude boost, then secondary motion, then attack retiming) — expressiveness
+/// and secondary motion touch disjoint bone sets (`Primary` vs `Secondary`) so they never
+/// conflict with each other, and retiming only ever touches times, never values, so it's safe
+/// to apply last regardless of what ran before it. `lag_keys` is fixed at 2 (the owner's
+/// "1-2 кадри" ask) whenever `secondary_amount` is requested.
+pub fn stylize_tracks(tracks: &[BoneMotion], expressiveness: f32, secondary_amount: f32, attack_sharpness: f32) -> Vec<BoneMotion> {
+    let mut out = tracks.to_vec();
+    if expressiveness > 0.0 {
+        out = boost_expressiveness(&out, expressiveness);
+    }
+    if secondary_amount > 0.0 {
+        out = secondary_motion(&out, 2, secondary_amount);
+    }
+    if attack_sharpness > 0.0 {
+        out = retime_attack(&out, attack_sharpness);
+    }
+    out
+}
+
+/// Doubles every bone's key rate by inserting a midpoint key (linear blend for position,
+/// `slerp_quat` at t=0.5 for rotation) between each consecutive pair of keys — real, smoother
+/// playback for the "🎬 60fps" PREVIEW viewer only. This changes key counts, and
+/// `patch_motion_keys` can only patch VALUES in place at a FIXED key count (see its doc
+/// comment) — turning this into an installable game patch would additionally require decoding
+/// the not-yet-understood chunk-size wrapper fields so a resized record's surrounding
+/// structure stays valid, which hasn't been cracked yet (see docs/AI.md). Deliberately
+/// preview-only: never wired into `stylize_tracks`/`style_motion_to_file`/patch export.
+pub fn resample_double_rate(tracks: &[BoneMotion]) -> Vec<BoneMotion> {
+    tracks
+        .iter()
+        .map(|t| {
+            let mut position_keys = Vec::with_capacity(t.position_keys.len() * 2);
+            for w in t.position_keys.windows(2) {
+                position_keys.push(w[0]);
+                let mut mid = [0.0f32; 4];
+                for c in 0..4 {
+                    mid[c] = (w[0][c] + w[1][c]) * 0.5;
+                }
+                position_keys.push(mid);
+            }
+            if let Some(&last) = t.position_keys.last() {
+                position_keys.push(last);
+            }
+            let mut rotation_keys = Vec::with_capacity(t.rotation_keys.len() * 2);
+            for w in t.rotation_keys.windows(2) {
+                rotation_keys.push(w[0]);
+                let q = slerp_quat([w[0][0], w[0][1], w[0][2], w[0][3]], [w[1][0], w[1][1], w[1][2], w[1][3]], 0.5);
+                rotation_keys.push([q[0], q[1], q[2], q[3], (w[0][4] + w[1][4]) * 0.5]);
+            }
+            if let Some(&last) = t.rotation_keys.last() {
+                rotation_keys.push(last);
+            }
+            BoneMotion { bone_name: t.bone_name.clone(), position_keys, rotation_keys, scale_keys: t.scale_keys.clone() }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +944,197 @@ mod tests {
         assert_eq!(result[0].rotation_keys[0], [0.43, -0.29, 0.57, 0.64, 0.0]);
         assert_eq!(result[0].rotation_keys[1], [0.48, -0.34, 0.53, 0.62, 0.04]);
         assert!(result[0].scale_keys.is_empty());
+    }
+
+    #[test]
+    fn classify_bone_matches_real_wolf_and_ogre_names() {
+        // Locomotion: never amplified, must not slide the character.
+        for name in ["Bone_ROOT", "Bone_Hip", "Bone_Leg_Left_Front_01", "Bone_Foot_Left_Front_END", "Bone_Left_Leg_Hip_1", "Bone_Left_Foot_Toe_1"] {
+            assert_eq!(classify_bone(name), BoneRole::Locomotion, "{name} should be Locomotion");
+        }
+        // Secondary: tails/cloth/ears/hair/brows/belt — follow-through candidates.
+        for name in ["Bone_Tail1", "Bone_ClothBack_ClothBack_1", "Bone_Ear_Left", "Bone_Head_Hair_1", "Bone_Left_EyeBrows_Brow_1", "Bone_Belt_Belt_1"] {
+            assert_eq!(classify_bone(name), BoneRole::Secondary, "{name} should be Secondary");
+        }
+        // Primary: torso/arms/head — safe to amplify.
+        for name in ["Bone_Spine1", "Bone_Head", "Bone_Left_Arm_Arm_1", "Bone_Left_Hand_Finger_1_1", "Bone_Neck"] {
+            assert_eq!(classify_bone(name), BoneRole::Primary, "{name} should be Primary");
+        }
+    }
+
+    #[test]
+    fn classify_bone_does_not_false_positive_on_substrings() {
+        // "beard" contains "ear" as a raw substring — token matching must not be fooled by it
+        // since it isn't a real bone in this game, but the classifier should still be robust.
+        assert_eq!(classify_bone("Bone_Beard_1"), BoneRole::Primary);
+    }
+
+    #[test]
+    fn boost_expressiveness_leaves_locomotion_bones_untouched() {
+        let leg = BoneMotion {
+            bone_name: "Bone_Leg_Left_Front_01".into(),
+            position_keys: vec![],
+            rotation_keys: vec![[0.0, 0.0, 0.0, 1.0, 0.0], [0.3, 0.0, 0.0, 0.9539, 0.04], [0.0, 0.0, 0.0, 1.0, 0.08]],
+            scale_keys: vec![],
+        };
+        let boosted = &boost_expressiveness(&[leg.clone()], 0.5)[0];
+        assert_eq!(boosted.rotation_keys, leg.rotation_keys, "locomotion bones must not slide/change");
+    }
+
+    #[test]
+    fn boost_expressiveness_amplifies_primary_bone_deviation_and_keeps_endpoints_sane() {
+        let spine = BoneMotion {
+            bone_name: "Bone_Spine1".into(),
+            position_keys: vec![],
+            // A symmetric swing away from identity and back — identity is exactly the mean.
+            rotation_keys: vec![
+                [0.0, 0.0, 0.0, 1.0, 0.0],
+                [0.2, 0.0, 0.0, 0.9798, 0.04],
+                [0.0, 0.0, 0.0, 1.0, 0.08],
+                [-0.2, 0.0, 0.0, 0.9798, 0.12],
+            ],
+            scale_keys: vec![],
+        };
+        let boosted = &boost_expressiveness(&[spine.clone()], 0.5)[0];
+        // The peak deviation key should have moved FURTHER from identity (bigger x component).
+        assert!(boosted.rotation_keys[1][0] > spine.rotation_keys[1][0], "peak deviation should grow: {} vs {}", boosted.rotation_keys[1][0], spine.rotation_keys[1][0]);
+        for (b, orig) in boosted.rotation_keys.iter().zip(&spine.rotation_keys) {
+            assert_eq!(b[4], orig[4], "time untouched");
+            let norm: f32 = b[..4].iter().map(|v| v * v).sum::<f32>().sqrt();
+            assert!((norm - 1.0).abs() < 1e-4, "stays a unit quaternion");
+        }
+    }
+
+    #[test]
+    fn boost_expressiveness_at_zero_amount_is_a_no_op() {
+        let spine = BoneMotion {
+            bone_name: "Bone_Spine1".into(),
+            position_keys: vec![[1.0, 2.0, 3.0, 0.0]],
+            rotation_keys: vec![[0.2, 0.0, 0.0, 0.9798, 0.0]],
+            scale_keys: vec![],
+        };
+        assert_eq!(boost_expressiveness(&[spine.clone()], 0.0)[0].rotation_keys, spine.rotation_keys);
+    }
+
+    #[test]
+    fn secondary_motion_lags_and_amplifies_only_secondary_bones() {
+        let tail = BoneMotion {
+            bone_name: "Bone_Tail1".into(),
+            position_keys: vec![],
+            rotation_keys: vec![
+                [0.0, 0.0, 0.0, 1.0, 0.0],
+                [0.3, 0.0, 0.0, 0.9539, 0.04],
+                [0.5, 0.0, 0.0, 0.8660, 0.08],
+                [0.3, 0.0, 0.0, 0.9539, 0.12],
+            ],
+            scale_keys: vec![],
+        };
+        let spine = BoneMotion { bone_name: "Bone_Spine1".into(), ..tail.clone() };
+        let out = secondary_motion(&[tail.clone(), spine.clone()], 2, 0.0);
+        // Spine (Primary) is untouched by secondary_motion.
+        assert_eq!(out[1].rotation_keys, spine.rotation_keys);
+        // Tail key 2 should now carry (a mean-relative rebuild of) key 0's value, not its own.
+        assert_eq!(out[0].rotation_keys[2][4], tail.rotation_keys[2][4], "time untouched");
+        assert!(
+            (out[0].rotation_keys[2][0] - tail.rotation_keys[2][0]).abs() > 1e-3,
+            "lagged key should differ from its own original value"
+        );
+        // First `lag_keys` keys have nothing earlier to copy — value unchanged (lag amount 0).
+        assert_eq!(out[0].rotation_keys[0], tail.rotation_keys[0]);
+    }
+
+    #[test]
+    fn retime_attack_preserves_endpoints_key_count_and_monotonicity() {
+        let bone = BoneMotion {
+            bone_name: "Bone_Right_Arm_Arm_1".into(),
+            position_keys: vec![],
+            rotation_keys: vec![
+                [0.0, 0.0, 0.0, 1.0, 0.0],
+                [0.1, 0.0, 0.0, 0.9950, 0.1],
+                [0.2, 0.0, 0.0, 0.9798, 0.2],
+                [0.3, 0.0, 0.0, 0.9539, 0.3],
+            ],
+            scale_keys: vec![],
+        };
+        let retimed = &retime_attack(&[bone.clone()], 0.8)[0];
+        assert_eq!(retimed.rotation_keys.len(), bone.rotation_keys.len(), "key count preserved");
+        assert_eq!(retimed.rotation_keys[0][4], 0.0, "start time preserved");
+        assert!((retimed.rotation_keys[3][4] - 0.3).abs() < 1e-5, "end time preserved");
+        for w in retimed.rotation_keys.windows(2) {
+            assert!(w[1][4] > w[0][4], "times must stay strictly increasing");
+        }
+        // Values must be byte-identical (only times move).
+        for (r, o) in retimed.rotation_keys.iter().zip(&bone.rotation_keys) {
+            assert_eq!(r[..4], o[..4]);
+        }
+        // Ease-out: early windup should be slower (bigger time gap) than the late strike.
+        let early_gap = retimed.rotation_keys[1][4] - retimed.rotation_keys[0][4];
+        let late_gap = retimed.rotation_keys[3][4] - retimed.rotation_keys[2][4];
+        assert!(early_gap > late_gap, "windup should be slower than the strike: {early_gap} vs {late_gap}");
+    }
+
+    #[test]
+    fn retime_attack_at_zero_sharpness_is_a_no_op() {
+        let bone = BoneMotion {
+            bone_name: "Bone_Right_Arm_Arm_1".into(),
+            position_keys: vec![],
+            rotation_keys: vec![[0.0, 0.0, 0.0, 1.0, 0.0], [0.1, 0.0, 0.0, 0.9950, 0.1]],
+            scale_keys: vec![],
+        };
+        assert_eq!(retime_attack(&[bone.clone()], 0.0)[0].rotation_keys, bone.rotation_keys);
+    }
+
+    #[test]
+    fn stylize_tracks_applies_all_three_without_conflict() {
+        let spine = BoneMotion {
+            bone_name: "Bone_Spine1".into(),
+            position_keys: vec![],
+            rotation_keys: vec![[0.0, 0.0, 0.0, 1.0, 0.0], [0.2, 0.0, 0.0, 0.9798, 0.1], [0.0, 0.0, 0.0, 1.0, 0.2]],
+            scale_keys: vec![],
+        };
+        let tail = BoneMotion { bone_name: "Bone_Tail1".into(), ..spine.clone() };
+        let leg = BoneMotion { bone_name: "Bone_Leg_Left_Front_01".into(), ..spine.clone() };
+        let out = stylize_tracks(&[spine.clone(), tail.clone(), leg.clone()], 0.3, 0.3, 0.5);
+        assert_eq!(out[2].rotation_keys.iter().map(|k| [k[0], k[1], k[2], k[3]]).collect::<Vec<_>>(), leg.rotation_keys.iter().map(|k| [k[0], k[1], k[2], k[3]]).collect::<Vec<_>>(), "leg values untouched by expressiveness/secondary");
+        assert!(out[2].rotation_keys[0][4] <= out[2].rotation_keys[1][4], "retiming still applies to every bone's times");
+        // Spine got expressiveness (values differ from original) and its own times retimed.
+        assert_ne!(out[0].rotation_keys[1][0], spine.rotation_keys[1][0]);
+    }
+
+    #[test]
+    fn resample_double_rate_inserts_a_correct_midpoint_between_each_key_pair() {
+        let bone = BoneMotion {
+            bone_name: "Bone_Spine1".into(),
+            position_keys: vec![[0.0, 0.0, 0.0, 0.0], [10.0, 20.0, 30.0, 0.1]],
+            rotation_keys: vec![[0.0, 0.0, 0.0, 1.0, 0.0], [0.3827, 0.0, 0.0, 0.9239, 0.1]],
+            scale_keys: vec![],
+        };
+        let out = &resample_double_rate(&[bone.clone()])[0];
+        assert_eq!(out.position_keys.len(), 3, "one midpoint inserted between the two keys");
+        assert_eq!(out.position_keys[0], bone.position_keys[0]);
+        assert_eq!(out.position_keys[2], bone.position_keys[1]);
+        assert_eq!(out.position_keys[1], [5.0, 10.0, 15.0, 0.05], "midpoint is the linear blend");
+        assert_eq!(out.rotation_keys.len(), 3);
+        assert_eq!(out.rotation_keys[0], bone.rotation_keys[0]);
+        assert_eq!(out.rotation_keys[2], bone.rotation_keys[1]);
+        assert!((out.rotation_keys[1][4] - 0.05).abs() < 1e-6, "midpoint time is the average");
+        let norm: f32 = out.rotation_keys[1][..4].iter().map(|v| v * v).sum::<f32>().sqrt();
+        assert!((norm - 1.0).abs() < 1e-4, "midpoint rotation stays a unit quaternion");
+    }
+
+    #[test]
+    fn resample_double_rate_handles_zero_and_one_key_tracks_without_panicking() {
+        let empty = BoneMotion { bone_name: "Bone_X".into(), position_keys: vec![], rotation_keys: vec![], scale_keys: vec![] };
+        let single = BoneMotion {
+            bone_name: "Bone_Y".into(),
+            position_keys: vec![[1.0, 2.0, 3.0, 0.0]],
+            rotation_keys: vec![[0.0, 0.0, 0.0, 1.0, 0.0]],
+            scale_keys: vec![],
+        };
+        let out = resample_double_rate(&[empty, single.clone()]);
+        assert!(out[0].position_keys.is_empty());
+        assert!(out[0].rotation_keys.is_empty());
+        assert_eq!(out[1].position_keys, single.position_keys, "a single key has no pair to interpolate — passes through");
+        assert_eq!(out[1].rotation_keys, single.rotation_keys);
     }
 }

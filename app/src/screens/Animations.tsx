@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { Lang } from "../lib/i18n";
 import type { ActorEntry, BoneMotion, LibraryEntry, MotionEntry, SkeletonNode, SkinnedMeshData } from "../lib/types";
 import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, exportMotionPatch, exportMotionPatchBatch, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
@@ -14,6 +14,63 @@ import SearchableList from "../components/SearchableList";
 interface Props {
   lang: Lang;
 }
+
+/** One row of the right-hand control sidebar: a label plus a compact strength picker (0 / mid /
+ * strong, or whatever `options` says). Used for jitter cleanup and the three animation-quality
+ * transforms — same visual pattern, four times, so it's a component instead of four copies. */
+function QualityToggle({
+  label,
+  title,
+  value,
+  onChange,
+  options,
+  disabled,
+}: {
+  label: string;
+  title?: string;
+  value: number;
+  onChange: (v: number) => void;
+  options: [number, string][];
+  disabled?: boolean;
+}) {
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div title={title} style={{ font: "600 10.5px system-ui", color: "var(--text-faint)", marginBottom: 4, cursor: title ? "help" : undefined }}>
+        {label}
+      </div>
+      <div style={{ display: "flex", gap: 4 }}>
+        {options.map(([v, text]) => (
+          <button
+            key={v}
+            onClick={() => onChange(v)}
+            disabled={disabled}
+            style={{
+              flex: 1,
+              padding: "5px 4px",
+              borderRadius: 10,
+              background: value === v ? "var(--accent)" : "var(--bg2)",
+              border: `1px solid ${value === v ? "var(--accent)" : "var(--border)"}`,
+              font: "600 10.5px system-ui",
+              color: value === v ? "#fff" : "var(--text-dim)",
+              cursor: disabled ? "wait" : "pointer",
+            }}
+          >
+            {text}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const sidebarSectionTitle: CSSProperties = {
+  font: "600 10px system-ui",
+  letterSpacing: ".06em",
+  textTransform: "uppercase",
+  color: "var(--text-faint)",
+  margin: "14px 0 8px",
+};
+const sidebarDivider: CSSProperties = { height: 1, background: "var(--border)", margin: "12px 0" };
 
 /** Actor filenames look like "Ani_Wolf_Monster_Wolf._xmac" or "Ani_Hero_Head_Player._xmac";
  * motion clips are named "Wolf_Stand_..." / "Hero_Stand_...". There's no exact ID linking the
@@ -82,6 +139,21 @@ export default function Animations({ lang }: Props) {
   // `xmot::smooth_tracks`, the same code `smooth-motion` writes real files with — so what
   // this previews is exactly what an export would contain).
   const [smoothStrength, setSmoothStrength] = useState(0);
+  // The three "animation quality" transforms (owner request, 2026-07-18): amplitude boost
+  // ("💪 Виразність" — spine/arms/head only, never legs/root), secondary motion ("🌊 Вторинний
+  // рух" — delayed follow-through for tails/cloth/ears/hair/belts only), and attack retiming
+  // ("⚡ Різкість ударів" — slow windup, sharp strike; safe on any clip, most useful on combat
+  // ones). All run in Rust (`xmot::stylize_tracks`) — same code the patch export writes.
+  const [expressiveness, setExpressiveness] = useState(0);
+  const [secondaryMotion, setSecondaryMotion] = useState(0);
+  const [sharpness, setSharpness] = useState(0);
+  // "🎬 60fps" — PREVIEW ONLY (`xmot::resample_double_rate`): doubles key rate for smoother
+  // playback, but changes key counts, which can't be written back into a real .xmot file in
+  // place. Deliberately excluded from `styleActive`, which gates the patch-export buttons —
+  // only `previewActive` (A/B, side-by-side) includes it.
+  const [doubleRate, setDoubleRate] = useState(false);
+  const styleActive = smoothStrength > 0 || expressiveness > 0 || secondaryMotion > 0 || sharpness > 0;
+  const previewActive = styleActive || doubleRate;
   // A/B compare (owner request): original tracks are always kept alongside the smoothed set,
   // so flipping between them is instant — same clip, same viewer, only the keyframes differ.
   const [originalTracks, setOriginalTracks] = useState<BoneMotion[] | null>(null);
@@ -95,7 +167,7 @@ export default function Animations({ lang }: Props) {
   // Batch export: every clip the motion list currently shows (creature pre-filter + search +
   // category chips) at the previewed strength — one creature's whole animation set → ONE patch.
   async function handleExportMotionPatchBatch() {
-    if (visibleMotions.length === 0 || skeletonNodes.length === 0 || smoothStrength <= 0) return;
+    if (visibleMotions.length === 0 || skeletonNodes.length === 0 || !styleActive) return;
     setExportingPatch(true);
     setPatchMessage(null);
     try {
@@ -103,7 +175,7 @@ export default function Animations({ lang }: Props) {
         visibleMotions[0].archivePath,
         visibleMotions.map((m) => m.entryPath),
         skeletonNodes.map((n) => n.name),
-        smoothStrength,
+        { smooth: smoothStrength, expressiveness, secondary: secondaryMotion, sharpness },
       );
       setPatchMessage(
         (lang === "uk" ? `Патч зібрано (${visibleMotions.length - failed.length} кліпів` : `Patch built (${visibleMotions.length - failed.length} clips`) +
@@ -120,7 +192,7 @@ export default function Animations({ lang }: Props) {
   }
 
   async function handleExportMotionPatch() {
-    if (!selectedMotion || skeletonNodes.length === 0 || smoothStrength <= 0) return;
+    if (!selectedMotion || skeletonNodes.length === 0 || !styleActive) return;
     setExportingPatch(true);
     setPatchMessage(null);
     try {
@@ -128,7 +200,7 @@ export default function Animations({ lang }: Props) {
         selectedMotion.archivePath,
         selectedMotion.entryPath,
         skeletonNodes.map((n) => n.name),
-        smoothStrength,
+        { smooth: smoothStrength, expressiveness, secondary: secondaryMotion, sharpness },
       );
       setPatchMessage(
         (lang === "uk" ? "Патч зібрано: " : "Patch built: ") +
@@ -360,15 +432,21 @@ export default function Animations({ lang }: Props) {
     setAbOriginal(false);
     const names = skeletonNodes.map((n) => n.name);
     Promise.all([
-      motionTracks(selectedMotion.archivePath, selectedMotion.entryPath, names, 0),
-      smoothStrength > 0
-        ? motionTracks(selectedMotion.archivePath, selectedMotion.entryPath, names, smoothStrength)
+      motionTracks(selectedMotion.archivePath, selectedMotion.entryPath, names),
+      previewActive
+        ? motionTracks(selectedMotion.archivePath, selectedMotion.entryPath, names, {
+            smooth: smoothStrength,
+            expressiveness,
+            secondary: secondaryMotion,
+            sharpness,
+            doubleRate,
+          })
         : Promise.resolve(null),
     ])
-      .then(([orig, smoothed]) => {
+      .then(([orig, styled]) => {
         if (cancelled) return;
         setOriginalTracks(orig);
-        setMotionTracksData(smoothed ?? orig);
+        setMotionTracksData(styled ?? orig);
       })
       .catch(() => {
         if (!cancelled) setMotionTracksData(null);
@@ -379,7 +457,7 @@ export default function Animations({ lang }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [selectedMotion, skeletonNodes, smoothStrength]);
+  }, [selectedMotion, skeletonNodes, smoothStrength, expressiveness, secondaryMotion, sharpness, doubleRate, previewActive]);
 
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
@@ -420,355 +498,405 @@ export default function Animations({ lang }: Props) {
       </div>
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0, minHeight: 0 }}>
-        {selectedMotion && motionTracksData ? (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              padding: "12px 20px",
-              borderBottom: "1px solid var(--border)",
-              font: "500 12px system-ui",
-              color: "var(--accent)",
-              background: "var(--bg1)",
-            }}
-          >
-            <button
-              onClick={() => setPlaying((p) => !p)}
-              style={{
-                padding: "6px 14px",
-                borderRadius: 16,
-                background: "var(--accent)",
-                border: "1px solid var(--accent)",
-                font: "600 11.5px system-ui",
-                color: "#fff",
-              }}
-            >
-              {playing ? (lang === "uk" ? "⏸ Пауза" : "⏸ Pause") : (lang === "uk" ? "▶ Грати" : "▶ Play")}
-            </button>
-            <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-              <input type="checkbox" checked={showSkeleton} onChange={(e) => setShowSkeleton(e.target.checked)} />
-              {lang === "uk" ? "Показати кістки" : "Show skeleton"}
-            </label>
-            <label
-              style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
-              title={lang === "uk" ? "Запам'ятовується окремо для цього персонажа" : "Remembered per character"}
-            >
-              <input
-                type="checkbox"
-                checked={mirrorSkeleton}
-                onChange={(e) => {
-                  const next = e.target.checked;
-                  setMirrorSkeleton(next);
-                  if (selectedActor) setActorOrientation(selectedActor.archivePath, selectedActor.entryPath, { mirrorSkeleton: next, mirrorMesh });
-                }}
+        <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+          <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+            {!selectedActor ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
+                {lang === "uk" ? "Оберіть персонажа зліва" : "Select a character on the left"}
+              </div>
+            ) : selectedMotion && motionTracksData && sideBySide && originalTracks && previewActive ? (
+              <div style={{ height: "100%", display: "flex", gap: 2 }}>
+                {([
+                  [lang === "uk" ? "Оригінал" : "Original", originalTracks, "var(--text-faint)"],
+                  [lang === "uk" ? "Стилізована" : "Styled", motionTracksData, "var(--accent)"],
+                ] as [string, BoneMotion[], string][]).map(([label, tracks, color], i) => (
+                  <div key={i} style={{ flex: 1, position: "relative", minWidth: 0, borderLeft: i === 1 ? "1px solid var(--border)" : "none" }}>
+                    <SkeletonAnimationViewer
+                      key={`${selectedActor.entryPath}::${selectedMotion.entryPath}::sxs${i}`}
+                      nodes={skeletonNodes}
+                      tracks={tracks}
+                      playing={playing}
+                      showSkeleton={showSkeleton}
+                      mirrorSkeleton={mirrorSkeleton}
+                      mirrorMesh={mirrorMesh}
+                      skinnedMesh={skinnedMeshData}
+                      objUrl={objUrl}
+                      diffuseUrl={diffuseUrl}
+                      normalUrl={normalUrl}
+                      resolveTexture={resolveTexture}
+                    />
+                    <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none", borderColor: color }}>
+                      {label}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : selectedMotion && motionTracksData ? (
+              <SkeletonAnimationViewer
+                key={`${selectedActor.entryPath}::${selectedMotion.entryPath}`}
+                nodes={skeletonNodes}
+                tracks={abOriginal && originalTracks ? originalTracks : motionTracksData}
+                playing={playing}
+                showSkeleton={showSkeleton}
+                mirrorSkeleton={mirrorSkeleton}
+                mirrorMesh={mirrorMesh}
+                // Real per-vertex bone weights, rendered via CPU skinning in
+                // SkeletonAnimationViewer (see there for why: THREE.SkinnedMesh's built-in GPU
+                // path had an unresolved rendering bug). Falls back to the static .obj (`objUrl`)
+                // if this is null (e.g. an actor whose skin data failed to parse).
+                skinnedMesh={skinnedMeshData}
+                objUrl={objUrl}
+                diffuseUrl={diffuseUrl}
+                normalUrl={normalUrl}
+                resolveTexture={resolveTexture}
               />
-              {lang === "uk" ? "Перевернути кістки" : "Flip skeleton"}
-            </label>
-            <label
-              style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}
-              title={lang === "uk" ? "Запам'ятовується окремо для цього персонажа" : "Remembered per character"}
-            >
-              <input
-                type="checkbox"
-                checked={mirrorMesh}
-                onChange={(e) => {
-                  const next = e.target.checked;
-                  setMirrorMesh(next);
-                  if (selectedActor) setActorOrientation(selectedActor.archivePath, selectedActor.entryPath, { mirrorSkeleton, mirrorMesh: next });
-                }}
+            ) : skeletonError ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--red)" }}>
+                {skeletonError}
+              </div>
+            ) : objError ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--red)" }}>
+                {objError}
+              </div>
+            ) : objLoading || !objUrl ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
+                {lang === "uk" ? "Конвертація актора…" : "Converting actor…"}
+              </div>
+            ) : (
+              <Model3DViewer
+                key={selectedActor.entryPath}
+                objUrl={objUrl}
+                diffuseUrl={diffuseUrl}
+                normalUrl={normalUrl}
+                mode={mode}
+                resolveTexture={resolveTexture}
               />
-              {lang === "uk" ? "Перевернути сітку" : "Flip mesh"}
-            </label>
-            <span>
-              {lang === "uk"
-                ? `Реальні дані анімації: ${motionDuration(motionTracksData).toFixed(2)}с, ${
-                    motionTracksData.filter((t) => t.positionKeys.length > 0 || t.rotationKeys.length > 0).length
-                  } кісток анімовано (скелет, без обтягнутої сітки)`
-                : `Real keyframe data: ${motionDuration(motionTracksData).toFixed(2)}s, ${
-                    motionTracksData.filter((t) => t.positionKeys.length > 0 || t.rotationKeys.length > 0).length
-                  } bones animated (skeleton only, not yet skinned to the mesh surface)`}
-            </span>
-            <div style={{ flex: 1 }} />
-            <span
-              title={
-                lang === "uk"
-                  ? "Реальний фільтр очищення дрижання суглобів (rust: smooth_tracks) — те саме, що запишеться у .xmot при експорті. Далі за планом (docs/AI.md): подвоєння кадрів 30→60fps і ретаргет мокапу."
-                  : "Real joint-jitter cleanup filter (rust: smooth_tracks) — exactly what a .xmot export would contain. Next per docs/AI.md: 30→60fps frame doubling and mocap retargeting."
-              }
-              style={{ color: "var(--text-faint)", font: "600 11px system-ui" }}
-            >
-              {lang === "uk" ? "🎬 Дрижання:" : "🎬 Jitter:"}
-            </span>
-            {([
-              [0, lang === "uk" ? "ориг." : "orig"],
-              [0.35, lang === "uk" ? "м'яко" : "soft"],
-              [0.6, lang === "uk" ? "сильно" : "strong"],
-            ] as [number, string][]).map(([value, label]) => (
-              <button
-                key={value}
-                onClick={() => setSmoothStrength(value)}
-                disabled={tracksLoading}
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 12,
-                  background: smoothStrength === value ? "var(--accent)" : "var(--bg2)",
-                  border: `1px solid ${smoothStrength === value ? "var(--accent)" : "var(--border)"}`,
-                  font: "600 11px system-ui",
-                  color: smoothStrength === value ? "#fff" : "var(--text-dim)",
-                }}
-              >
-                {label}
-              </button>
-            ))}
-            {smoothStrength > 0 ? (
-              <button
-                onClick={handleExportMotionPatch}
-                disabled={exportingPatch}
-                title={
-                  lang === "uk"
-                    ? "Зібрати патч-том animations.pNN з цим кліпом у поточній силі згладжування — потім «Встановити в гру» в Налаштуваннях."
-                    : "Build an animations.pNN patch volume with this clip at the current smoothing strength — then “Install into game” in Settings."
-                }
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 12,
-                  background: exportingPatch ? "var(--bg2)" : "var(--accent)",
-                  border: "1px solid var(--accent)",
-                  font: "600 11px system-ui",
-                  color: exportingPatch ? "var(--text-dim)" : "#fff",
-                  cursor: exportingPatch ? "wait" : "pointer",
-                }}
-              >
-                {exportingPatch ? (lang === "uk" ? "Збирання…" : "Building…") : lang === "uk" ? "💾 У патч" : "💾 To patch"}
-              </button>
-            ) : null}
-            {smoothStrength > 0 && visibleMotions.length > 1 ? (
-              <button
-                onClick={handleExportMotionPatchBatch}
-                disabled={exportingPatch}
-                title={
-                  lang === "uk"
-                    ? "Згладити ВСІ кліпи з поточного списку знизу (фільтр істоти + пошук + категорія) і зібрати їх ОДНИМ патч-томом."
-                    : "Smooth EVERY clip in the current list below (creature filter + search + category) and pack them as ONE patch volume."
-                }
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 12,
-                  background: "var(--bg2)",
-                  border: "1px solid var(--accent)",
-                  font: "600 11px system-ui",
-                  color: exportingPatch ? "var(--text-faint)" : "var(--text)",
-                  cursor: exportingPatch ? "wait" : "pointer",
-                }}
-              >
-                {lang === "uk" ? `💾 Всі кліпи (${visibleMotions.length})` : `💾 All clips (${visibleMotions.length})`}
-              </button>
-            ) : null}
-            {smoothStrength > 0 ? (
-              <button
-                onClick={() => setAbOriginal((v) => !v)}
-                title={
-                  lang === "uk"
-                    ? "Миттєве перемикання між оригінальним кліпом і згладженим — той самий момент часу, ті самі кістки."
-                    : "Instant flip between the original clip and the smoothed one — same viewer, only keyframes differ."
-                }
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 12,
-                  background: abOriginal ? "var(--red)" : "var(--bg2)",
-                  border: `1px solid ${abOriginal ? "var(--red)" : "var(--border)"}`,
-                  font: "600 11px system-ui",
-                  color: abOriginal ? "#fff" : "var(--text-dim)",
-                }}
-              >
-                {abOriginal ? (lang === "uk" ? "👁 Оригінал" : "👁 Original") : lang === "uk" ? "A/B" : "A/B"}
-              </button>
-            ) : null}
-            {smoothStrength > 0 ? (
-              <button
-                onClick={() => setSideBySide((v) => !v)}
-                title={
-                  lang === "uk"
-                    ? "Дві анімації одночасно: зліва оригінал, справа згладжена (спільні пауза/грати)."
-                    : "Both animations at once: original left, smoothed right (shared play/pause)."
-                }
-                style={{
-                  padding: "5px 10px",
-                  borderRadius: 12,
-                  background: sideBySide ? "var(--accent)" : "var(--bg2)",
-                  border: `1px solid ${sideBySide ? "var(--accent)" : "var(--border)"}`,
-                  font: "600 11px system-ui",
-                  color: sideBySide ? "#fff" : "var(--text-dim)",
-                }}
-              >
-                {lang === "uk" ? "⿻ Поруч" : "⿻ Side by side"}
-              </button>
+            )}
+            {tracksLoading ? (
+              <div style={{ position: "absolute", top: 10, left: 10, font: "600 11px system-ui", color: "var(--text-faint)", background: "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
+                {lang === "uk" ? "Завантаження реальних кадрів анімації…" : "Loading real keyframe data…"}
+              </div>
             ) : null}
           </div>
-        ) : (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 12,
-              padding: "12px 20px",
-              borderBottom: "1px solid var(--border)",
-              font: "500 12px system-ui",
-              color: "var(--accent)",
-              background: "var(--bg1)",
-            }}
-          >
-            {tracksLoading
-              ? lang === "uk" ? "Завантаження реальних кадрів анімації…" : "Loading real keyframe data…"
-              : lang === "uk"
-                ? "Оберіть анімацію знизу, щоб побачити реальне відтворення кістяка."
-                : "Select an animation below to see real skeleton playback."}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 8, padding: "12px 20px", borderBottom: "1px solid var(--border)", alignItems: "center" }}>
-          {(["textured", "wireframe", "clay", "normalMap"] as ViewMode[]).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              style={{
-                padding: "7px 14px",
-                borderRadius: 16,
-                background: mode === m ? "var(--accent)" : "var(--bg2)",
-                border: `1px solid ${mode === m ? "var(--accent)" : "var(--border)"}`,
-                font: "600 11.5px system-ui",
-                color: mode === m ? "#fff" : "var(--text-dim)",
-              }}
-            >
-              {m}
-            </button>
-          ))}
-          <div style={{ flex: 1 }} />
-          {selectedActor && actorDiffuseEntries.length > 0 ? (
-            <>
-              {enhancedRels.size > 0 ? (
+
+          {/* Right control sidebar (owner request, 2026-07-18): everything that used to sit in
+              a crowded row above the 3D canvas now lives here, next to it, on a wide screen. */}
+          <div style={{ width: 268, flexShrink: 0, borderLeft: "1px solid var(--border)", background: "var(--bg1)", overflowY: "auto", padding: "12px 14px" }}>
+            <div style={{ display: "flex", gap: 4 }}>
+              {(["textured", "wireframe", "clay", "normalMap"] as ViewMode[]).map((m) => (
                 <button
-                  onClick={() => setShowEnhanced((v) => !v)}
+                  key={m}
+                  onClick={() => setMode(m)}
                   style={{
-                    padding: "7px 14px",
-                    borderRadius: 16,
-                    background: showEnhanced ? "var(--accent)" : "var(--bg2)",
-                    border: `1px solid ${showEnhanced ? "var(--accent)" : "var(--border)"}`,
-                    font: "600 11.5px system-ui",
-                    color: showEnhanced ? "#fff" : "var(--text-dim)",
+                    flex: 1,
+                    padding: "6px 4px",
+                    borderRadius: 10,
+                    background: mode === m ? "var(--accent)" : "var(--bg2)",
+                    border: `1px solid ${mode === m ? "var(--accent)" : "var(--border)"}`,
+                    font: "600 10px system-ui",
+                    color: mode === m ? "#fff" : "var(--text-dim)",
                   }}
                 >
-                  {showEnhanced
-                    ? lang === "uk"
-                      ? "Показано: покращені"
-                      : "Showing: enhanced"
-                    : lang === "uk"
-                      ? "Показано: оригінал"
-                      : "Showing: original"}
+                  {m}
                 </button>
-              ) : null}
-              <button
-                onClick={handleEnhanceTextures}
-                disabled={enhancing}
-                style={{
-                  padding: "7px 14px",
-                  borderRadius: 16,
-                  background: enhancing ? "var(--bg2)" : "var(--accent)",
-                  border: "1px solid var(--accent)",
-                  font: "600 11.5px system-ui",
-                  color: enhancing ? "var(--text-dim)" : "#fff",
-                  cursor: enhancing ? "wait" : "pointer",
-                }}
-                title={
-                  lang === "uk"
-                    ? `Покращити всі текстури цієї моделі (${actorDiffuseEntries.length} шт.)`
-                    : `Enhance all of this model's textures (${actorDiffuseEntries.length})`
-                }
-              >
-                {enhancing
-                  ? lang === "uk"
-                    ? "Покращення…"
-                    : "Enhancing…"
-                  : lang === "uk"
-                    ? `✨ Покращити текстури (${actorDiffuseEntries.length})`
-                    : `✨ Enhance textures (${actorDiffuseEntries.length})`}
-              </button>
-            </>
-          ) : null}
-        </div>
-        <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-          {!selectedActor ? (
-            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
-              {lang === "uk" ? "Оберіть персонажа зліва" : "Select a character on the left"}
-            </div>
-          ) : selectedMotion && motionTracksData && sideBySide && originalTracks && smoothStrength > 0 ? (
-            <div style={{ height: "100%", display: "flex", gap: 2 }}>
-              {([
-                [lang === "uk" ? "Оригінал" : "Original", originalTracks, "var(--text-faint)"],
-                [lang === "uk" ? `Згладжена (${smoothStrength})` : `Smoothed (${smoothStrength})`, motionTracksData, "var(--accent)"],
-              ] as [string, BoneMotion[], string][]).map(([label, tracks, color], i) => (
-                <div key={i} style={{ flex: 1, position: "relative", minWidth: 0, borderLeft: i === 1 ? "1px solid var(--border)" : "none" }}>
-                  <SkeletonAnimationViewer
-                    key={`${selectedActor.entryPath}::${selectedMotion.entryPath}::sxs${i}`}
-                    nodes={skeletonNodes}
-                    tracks={tracks}
-                    playing={playing}
-                    showSkeleton={showSkeleton}
-                    mirrorSkeleton={mirrorSkeleton}
-                    mirrorMesh={mirrorMesh}
-                    skinnedMesh={skinnedMeshData}
-                    objUrl={objUrl}
-                    diffuseUrl={diffuseUrl}
-                    normalUrl={normalUrl}
-                    resolveTexture={resolveTexture}
-                  />
-                  <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none", borderColor: color }}>
-                    {label}
-                  </div>
-                </div>
               ))}
             </div>
-          ) : selectedMotion && motionTracksData ? (
-            <SkeletonAnimationViewer
-              key={`${selectedActor.entryPath}::${selectedMotion.entryPath}`}
-              nodes={skeletonNodes}
-              tracks={abOriginal && originalTracks ? originalTracks : motionTracksData}
-              playing={playing}
-              showSkeleton={showSkeleton}
-              mirrorSkeleton={mirrorSkeleton}
-              mirrorMesh={mirrorMesh}
-              // Real per-vertex bone weights, rendered via CPU skinning in
-              // SkeletonAnimationViewer (see there for why: THREE.SkinnedMesh's built-in GPU
-              // path had an unresolved rendering bug). Falls back to the static .obj (`objUrl`)
-              // if this is null (e.g. an actor whose skin data failed to parse).
-              skinnedMesh={skinnedMeshData}
-              objUrl={objUrl}
-              diffuseUrl={diffuseUrl}
-              normalUrl={normalUrl}
-              resolveTexture={resolveTexture}
-            />
-          ) : skeletonError ? (
-            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--red)" }}>
-              {skeletonError}
-            </div>
-          ) : objError ? (
-            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--red)" }}>
-              {objError}
-            </div>
-          ) : objLoading || !objUrl ? (
-            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
-              {lang === "uk" ? "Конвертація актора…" : "Converting actor…"}
-            </div>
-          ) : (
-            <Model3DViewer
-              key={selectedActor.entryPath}
-              objUrl={objUrl}
-              diffuseUrl={diffuseUrl}
-              normalUrl={normalUrl}
-              mode={mode}
-              resolveTexture={resolveTexture}
-            />
-          )}
+
+            {selectedActor && actorDiffuseEntries.length > 0 ? (
+              <>
+                <div style={sidebarDivider} />
+                <button
+                  onClick={handleEnhanceTextures}
+                  disabled={enhancing}
+                  style={{
+                    width: "100%",
+                    padding: "7px 10px",
+                    borderRadius: 10,
+                    background: enhancing ? "var(--bg2)" : "var(--accent)",
+                    border: "1px solid var(--accent)",
+                    font: "600 11px system-ui",
+                    color: enhancing ? "var(--text-dim)" : "#fff",
+                    cursor: enhancing ? "wait" : "pointer",
+                  }}
+                  title={
+                    lang === "uk"
+                      ? `Покращити всі текстури цієї моделі (${actorDiffuseEntries.length} шт.)`
+                      : `Enhance all of this model's textures (${actorDiffuseEntries.length})`
+                  }
+                >
+                  {enhancing
+                    ? lang === "uk" ? "Покращення…" : "Enhancing…"
+                    : lang === "uk" ? `✨ Покращити текстури (${actorDiffuseEntries.length})` : `✨ Enhance textures (${actorDiffuseEntries.length})`}
+                </button>
+                {enhancedRels.size > 0 ? (
+                  <button
+                    onClick={() => setShowEnhanced((v) => !v)}
+                    style={{
+                      width: "100%",
+                      marginTop: 6,
+                      padding: "6px 10px",
+                      borderRadius: 10,
+                      background: showEnhanced ? "var(--accent)" : "var(--bg2)",
+                      border: `1px solid ${showEnhanced ? "var(--accent)" : "var(--border)"}`,
+                      font: "600 10.5px system-ui",
+                      color: showEnhanced ? "#fff" : "var(--text-dim)",
+                    }}
+                  >
+                    {showEnhanced
+                      ? lang === "uk" ? "Показано: покращені" : "Showing: enhanced"
+                      : lang === "uk" ? "Показано: оригінал" : "Showing: original"}
+                  </button>
+                ) : null}
+              </>
+            ) : null}
+
+            {selectedMotion && motionTracksData ? (
+              <>
+                <div style={sidebarDivider} />
+                <div style={{ font: "500 10.5px system-ui", color: "var(--text-dim)", lineHeight: 1.4, marginBottom: 10 }}>
+                  {lang === "uk"
+                    ? `${motionDuration(motionTracksData).toFixed(2)}с, ${
+                        motionTracksData.filter((t) => t.positionKeys.length > 0 || t.rotationKeys.length > 0).length
+                      } кісток анімовано`
+                    : `${motionDuration(motionTracksData).toFixed(2)}s, ${
+                        motionTracksData.filter((t) => t.positionKeys.length > 0 || t.rotationKeys.length > 0).length
+                      } bones animated`}
+                </div>
+                <button
+                  onClick={() => setPlaying((p) => !p)}
+                  style={{
+                    width: "100%",
+                    padding: "7px 10px",
+                    borderRadius: 10,
+                    background: "var(--accent)",
+                    border: "1px solid var(--accent)",
+                    font: "600 11px system-ui",
+                    color: "#fff",
+                    marginBottom: 8,
+                  }}
+                >
+                  {playing ? (lang === "uk" ? "⏸ Пауза" : "⏸ Pause") : (lang === "uk" ? "▶ Грати" : "▶ Play")}
+                </button>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", font: "500 11px system-ui", marginBottom: 4 }}>
+                  <input type="checkbox" checked={showSkeleton} onChange={(e) => setShowSkeleton(e.target.checked)} />
+                  {lang === "uk" ? "Показати кістки" : "Show skeleton"}
+                </label>
+                <label
+                  style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", font: "500 11px system-ui", marginBottom: 4 }}
+                  title={lang === "uk" ? "Запам'ятовується окремо для цього персонажа" : "Remembered per character"}
+                >
+                  <input
+                    type="checkbox"
+                    checked={mirrorSkeleton}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setMirrorSkeleton(next);
+                      if (selectedActor) setActorOrientation(selectedActor.archivePath, selectedActor.entryPath, { mirrorSkeleton: next, mirrorMesh });
+                    }}
+                  />
+                  {lang === "uk" ? "Перевернути кістки" : "Flip skeleton"}
+                </label>
+                <label
+                  style={{ display: "flex", alignItems: "center", gap: 6, cursor: "pointer", font: "500 11px system-ui" }}
+                  title={lang === "uk" ? "Запам'ятовується окремо для цього персонажа" : "Remembered per character"}
+                >
+                  <input
+                    type="checkbox"
+                    checked={mirrorMesh}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setMirrorMesh(next);
+                      if (selectedActor) setActorOrientation(selectedActor.archivePath, selectedActor.entryPath, { mirrorSkeleton, mirrorMesh: next });
+                    }}
+                  />
+                  {lang === "uk" ? "Перевернути сітку" : "Flip mesh"}
+                </label>
+
+                <div style={sidebarSectionTitle}>{lang === "uk" ? "Якість анімації" : "Animation quality"}</div>
+                <QualityToggle
+                  label={lang === "uk" ? "🎬 Дрижання" : "🎬 Jitter"}
+                  title={
+                    lang === "uk"
+                      ? "Реальний фільтр очищення дрижання суглобів (rust: smooth_tracks) — те саме, що запишеться у .xmot при експорті."
+                      : "Real joint-jitter cleanup filter (rust: smooth_tracks) — exactly what a .xmot export would contain."
+                  }
+                  value={smoothStrength}
+                  onChange={setSmoothStrength}
+                  disabled={tracksLoading}
+                  options={[
+                    [0, lang === "uk" ? "ориг." : "orig"],
+                    [0.35, lang === "uk" ? "м'яко" : "soft"],
+                    [0.6, lang === "uk" ? "сильно" : "strong"],
+                  ]}
+                />
+                <QualityToggle
+                  label={lang === "uk" ? "💪 Виразність" : "💪 Expressiveness"}
+                  title={
+                    lang === "uk"
+                      ? "Підсилює амплітуду руху корпуса/рук/голови відносно середньої пози. Ноги й корінь не чіпає — щоб не ковзали по землі."
+                      : "Amplifies torso/arm/head motion away from the average pose. Legs and root are left untouched so the character doesn't slide."
+                  }
+                  value={expressiveness}
+                  onChange={setExpressiveness}
+                  disabled={tracksLoading}
+                  options={[
+                    [0, lang === "uk" ? "ориг." : "orig"],
+                    [0.25, lang === "uk" ? "помітно" : "visible"],
+                    [0.4, lang === "uk" ? "сильно" : "strong"],
+                  ]}
+                />
+                <QualityToggle
+                  label={lang === "uk" ? "🌊 Вторинний рух" : "🌊 Secondary motion"}
+                  title={
+                    lang === "uk"
+                      ? "Хвости/тканина/вуха/волосся/пасок отримують запізнення (follow-through) і більшу амплітуду відносно тіла."
+                      : "Tails/cloth/ears/hair/belt get a delayed follow-through and extra amplitude relative to the body."
+                  }
+                  value={secondaryMotion}
+                  onChange={setSecondaryMotion}
+                  disabled={tracksLoading}
+                  options={[
+                    [0, lang === "uk" ? "ориг." : "orig"],
+                    [0.35, lang === "uk" ? "помітно" : "visible"],
+                    [0.6, lang === "uk" ? "сильно" : "strong"],
+                  ]}
+                />
+                <QualityToggle
+                  label={lang === "uk" ? "⚡ Різкість ударів" : "⚡ Strike sharpness"}
+                  title={
+                    lang === "uk"
+                      ? "Перетаймінг: повільний замах, різкий удар — часи ключів переписуються, значення не змінюються. Найкорисніше на бойових кліпах."
+                      : "Retiming: slow windup, sharp strike — key TIMES are rewritten, values untouched. Most useful on combat clips."
+                  }
+                  value={sharpness}
+                  onChange={setSharpness}
+                  disabled={tracksLoading}
+                  options={[
+                    [0, lang === "uk" ? "ориг." : "orig"],
+                    [0.5, lang === "uk" ? "помітно" : "visible"],
+                    [0.8, lang === "uk" ? "сильно" : "strong"],
+                  ]}
+                />
+                <label
+                  style={{ display: "flex", alignItems: "center", gap: 6, cursor: tracksLoading ? "wait" : "pointer", font: "500 11px system-ui", marginTop: 4 }}
+                  title={
+                    lang === "uk"
+                      ? "Подвоює частоту кадрів для плавнішого перегляду ТУТ (лінійна/slerp інтерполяція проміжних ключів). ⚠️ Тільки перегляд — у патч це поки не запишеться: формат потребує зміни кількості ключів, а обгортку .xmot ще не розшифровано до кінця."
+                      : "Doubles the frame rate for smoother playback HERE (linear/slerp interpolated in-between keys). ⚠️ Preview only — can't be written into a patch yet: that needs changing key counts, and the .xmot wrapper isn't fully decoded."
+                  }
+                >
+                  <input type="checkbox" checked={doubleRate} disabled={tracksLoading} onChange={(e) => setDoubleRate(e.target.checked)} />
+                  {lang === "uk" ? "🎬 60fps (тільки перегляд)" : "🎬 60fps (preview only)"}
+                </label>
+
+                {previewActive ? (
+                  <>
+                    <div style={sidebarDivider} />
+                    {styleActive ? (
+                      <>
+                        <button
+                          onClick={handleExportMotionPatch}
+                          disabled={exportingPatch}
+                          title={
+                            lang === "uk"
+                              ? "Зібрати патч-том animations.pNN з цим кліпом у поточному стилі — потім «Встановити в гру» в Налаштуваннях."
+                              : "Build an animations.pNN patch volume with this clip at the current style — then “Install into game” in Settings."
+                          }
+                          style={{
+                            width: "100%",
+                            padding: "7px 10px",
+                            borderRadius: 10,
+                            background: exportingPatch ? "var(--bg2)" : "var(--accent)",
+                            border: "1px solid var(--accent)",
+                            font: "600 11px system-ui",
+                            color: exportingPatch ? "var(--text-dim)" : "#fff",
+                            cursor: exportingPatch ? "wait" : "pointer",
+                            marginBottom: 6,
+                          }}
+                        >
+                          {exportingPatch ? (lang === "uk" ? "Збирання…" : "Building…") : lang === "uk" ? "💾 У патч" : "💾 To patch"}
+                        </button>
+                        {visibleMotions.length > 1 ? (
+                          <button
+                            onClick={handleExportMotionPatchBatch}
+                            disabled={exportingPatch}
+                            title={
+                              lang === "uk"
+                                ? "Стилізувати ВСІ кліпи з поточного списку знизу (фільтр істоти + пошук + категорія) і зібрати їх ОДНИМ патч-томом."
+                                : "Style EVERY clip in the current list below (creature filter + search + category) and pack them as ONE patch volume."
+                            }
+                            style={{
+                              width: "100%",
+                              padding: "6px 10px",
+                              borderRadius: 10,
+                              background: "var(--bg2)",
+                              border: "1px solid var(--accent)",
+                              font: "600 10.5px system-ui",
+                              color: exportingPatch ? "var(--text-faint)" : "var(--text)",
+                              cursor: exportingPatch ? "wait" : "pointer",
+                              marginBottom: 6,
+                            }}
+                          >
+                            {lang === "uk" ? `💾 Всі кліпи (${visibleMotions.length})` : `💾 All clips (${visibleMotions.length})`}
+                          </button>
+                        ) : null}
+                      </>
+                    ) : (
+                      <div style={{ font: "500 10.5px system-ui", color: "var(--text-faint)", marginBottom: 6 }}>
+                        {lang === "uk"
+                          ? "60fps — лише перегляд, у патч поки не пишеться."
+                          : "60fps is preview-only, not exportable to a patch yet."}
+                      </div>
+                    )}
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        onClick={() => setAbOriginal((v) => !v)}
+                        title={
+                          lang === "uk"
+                            ? "Миттєве перемикання між оригінальним кліпом і стилізованим — той самий момент часу, ті самі кістки."
+                            : "Instant flip between the original clip and the styled one — same viewer, only keyframes differ."
+                        }
+                        style={{
+                          flex: 1,
+                          padding: "6px 4px",
+                          borderRadius: 10,
+                          background: abOriginal ? "var(--red)" : "var(--bg2)",
+                          border: `1px solid ${abOriginal ? "var(--red)" : "var(--border)"}`,
+                          font: "600 10.5px system-ui",
+                          color: abOriginal ? "#fff" : "var(--text-dim)",
+                        }}
+                      >
+                        {abOriginal ? (lang === "uk" ? "👁 Оригінал" : "👁 Original") : "A/B"}
+                      </button>
+                      <button
+                        onClick={() => setSideBySide((v) => !v)}
+                        title={
+                          lang === "uk"
+                            ? "Дві анімації одночасно: зліва оригінал, справа стилізована (спільні пауза/грати)."
+                            : "Both animations at once: original left, styled right (shared play/pause)."
+                        }
+                        style={{
+                          flex: 1,
+                          padding: "6px 4px",
+                          borderRadius: 10,
+                          background: sideBySide ? "var(--accent)" : "var(--bg2)",
+                          border: `1px solid ${sideBySide ? "var(--accent)" : "var(--border)"}`,
+                          font: "600 10.5px system-ui",
+                          color: sideBySide ? "#fff" : "var(--text-dim)",
+                        }}
+                      >
+                        {lang === "uk" ? "⿻ Поруч" : "⿻ Side by side"}
+                      </button>
+                    </div>
+                  </>
+                ) : null}
+              </>
+            ) : (
+              <div style={{ font: "500 11px system-ui", color: "var(--text-faint)", marginTop: 12 }}>
+                {lang === "uk" ? "Оберіть анімацію знизу, щоб побачити реальне відтворення кістяка." : "Select an animation below to see real skeleton playback."}
+              </div>
+            )}
+          </div>
         </div>
 
         <div style={{ flexShrink: 0, height: 220, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", padding: "10px 16px" }}>

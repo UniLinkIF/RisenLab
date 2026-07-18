@@ -365,7 +365,11 @@ export function risenlabDevApi(): Plugin {
             const entryPath = url.searchParams.get("entryPath")!;
             const boneNamesJson = url.searchParams.get("boneNames")!;
             const smooth = url.searchParams.get("smooth") ?? "0";
-            const { stdout } = await runCli(["motion-tracks", archivePath, entryPath, boneNamesJson, smooth]);
+            const expressiveness = url.searchParams.get("expressiveness") ?? "0";
+            const secondary = url.searchParams.get("secondary") ?? "0";
+            const sharpness = url.searchParams.get("sharpness") ?? "0";
+            const doubleRate = url.searchParams.get("doubleRate") === "true" ? "true" : "false";
+            const { stdout } = await runCli(["motion-tracks", archivePath, entryPath, boneNamesJson, smooth, expressiveness, secondary, sharpness, doubleRate]);
             return sendJson(res, 200, JSON.parse(stdout));
           }
           if (url.pathname === "/api/actor-skinned-mesh" && req.method === "GET") {
@@ -442,14 +446,17 @@ export function risenlabDevApi(): Plugin {
             return sendJson(res, 200, written);
           }
           if (url.pathname === "/api/export-motion-patch-batch" && req.method === "POST") {
-            const { archivePath, entryPaths, boneNames, strength } = await readJsonBody(req);
+            const { archivePath, entryPaths, boneNames, smooth, expressiveness, secondary, sharpness } = await readJsonBody(req);
             const settings = await loadSettings();
             const { stdout } = await runCli([
               "export-motion-patch-batch",
               archivePath,
               JSON.stringify(entryPaths),
               JSON.stringify(boneNames),
-              String(strength),
+              String(smooth ?? 0),
+              String(expressiveness ?? 0),
+              String(secondary ?? 0),
+              String(sharpness ?? 0),
               settings.patchDir,
             ]);
             return sendJson(res, 200, JSON.parse(stdout));
@@ -468,15 +475,18 @@ export function risenlabDevApi(): Plugin {
           }
           if (url.pathname === "/api/export-motion-patch" && req.method === "POST") {
             // Full "enhance this animation → installable mod file" chain, all in the CLI
-            // (smooth → stage under the real entry path → pack a zlib .pNN patch volume).
-            const { archivePath, entryPath, boneNames, strength } = await readJsonBody(req);
+            // (style → stage under the real entry path → pack a zlib .pNN patch volume).
+            const { archivePath, entryPath, boneNames, smooth, expressiveness, secondary, sharpness } = await readJsonBody(req);
             const settings = await loadSettings();
             const { stdout } = await runCli([
               "export-motion-patch",
               archivePath,
               entryPath,
               JSON.stringify(boneNames),
-              String(strength),
+              String(smooth ?? 0),
+              String(expressiveness ?? 0),
+              String(secondary ?? 0),
+              String(sharpness ?? 0),
               settings.patchDir,
             ]);
             return sendJson(res, 200, { patch: JSON.parse(stdout) });

@@ -137,14 +137,26 @@ enum Commands {
     ActorSkeleton { archive: PathBuf, entry_path: String },
     /// Prints one motion clip's real per-bone keyframe tracks as JSON, for each bone name in
     /// `bone_names_json` (a JSON array of strings — typically every name from `actor-skeleton`).
-    /// `smooth` > 0 applies the jitter-cleanup filter (`xmot::smooth_tracks`) before printing —
-    /// the viewer's before/after preview path.
+    /// `smooth` > 0 applies the jitter-cleanup filter (`xmot::smooth_tracks`); `expressiveness`/
+    /// `secondary`/`sharpness` > 0 apply the matching `xmot::stylize_tracks` transform — all
+    /// independently toggleable, applied in that order. `double_rate` (0/1) applies
+    /// `xmot::resample_double_rate` LAST, PREVIEW ONLY — it changes key counts, which can't be
+    /// written back to a real `.xmot` file in place (see that function's doc comment), so it's
+    /// never available on the export-patch commands. The viewer's before/after preview path.
     MotionTracks {
         archive: PathBuf,
         entry_path: String,
         bone_names_json: String,
         #[arg(default_value_t = 0.0)]
         smooth: f32,
+        #[arg(default_value_t = 0.0)]
+        expressiveness: f32,
+        #[arg(default_value_t = 0.0)]
+        secondary: f32,
+        #[arg(default_value_t = 0.0)]
+        sharpness: f32,
+        #[arg(default_value_t = false)]
+        double_rate: bool,
     },
     /// Prints one actor's real skinned mesh (positions/normals/UVs/faces/per-vertex bone
     /// weights) as JSON, parsed directly from the `._xmac` bytes — no `mimicry-helper.exe`
@@ -153,25 +165,39 @@ enum Commands {
     /// Prints a texture's real width/height/pixel-format/file-size (read from its source
     /// archive entry) as JSON, for the review UI's detail panel.
     TextureMeta { archive: PathBuf, entry_path: String },
-    /// Smooths one clip and packs it straight into a fresh `<stem>.pNN` patch volume under
-    /// `patch_dir/<group>/` (ZLib entries — animations.pak's own convention). Prints the
+    /// Styles one clip (jitter + expressiveness/secondary-motion/attack-retiming, each
+    /// independently toggled) and packs it straight into a fresh `<stem>.pNN` patch volume
+    /// under `patch_dir/<group>/` (ZLib entries — animations.pak's own convention). Prints the
     /// patch path.
     ExportMotionPatch {
         archive: PathBuf,
         entry_path: String,
         bone_names_json: String,
-        strength: f32,
+        smooth: f32,
+        #[arg(default_value_t = 0.0)]
+        expressiveness: f32,
+        #[arg(default_value_t = 0.0)]
+        secondary: f32,
+        #[arg(default_value_t = 0.0)]
+        sharpness: f32,
         patch_dir: PathBuf,
         #[arg(default_value = "compiled")]
         group: String,
     },
-    /// Smooths MANY clips (entries_json = JSON array of entry paths, e.g. every animation of
-    /// one creature) into a SINGLE `<stem>.pNN` patch volume. Prints `{patch, failed[]}`.
+    /// Styles MANY clips the same way (entries_json = JSON array of entry paths, e.g. every
+    /// animation of one creature) into a SINGLE `<stem>.pNN` patch volume. Prints
+    /// `{patch, failed[]}`.
     ExportMotionPatchBatch {
         archive: PathBuf,
         entries_json: String,
         bone_names_json: String,
-        strength: f32,
+        smooth: f32,
+        #[arg(default_value_t = 0.0)]
+        expressiveness: f32,
+        #[arg(default_value_t = 0.0)]
+        secondary: f32,
+        #[arg(default_value_t = 0.0)]
+        sharpness: f32,
         patch_dir: PathBuf,
         #[arg(default_value = "compiled")]
         group: String,
@@ -441,10 +467,16 @@ fn main() -> anyhow::Result<()> {
             entry_path,
             bone_names_json,
             smooth,
+            expressiveness,
+            secondary,
+            sharpness,
+            double_rate,
         } => {
             let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
             let tracks = batch::motion_tracks(&archive, &entry_path, &bone_names)?;
             let tracks = if smooth > 0.0 { risenlab::xmot::smooth_tracks(&tracks, smooth) } else { tracks };
+            let tracks = risenlab::xmot::stylize_tracks(&tracks, expressiveness, secondary, sharpness);
+            let tracks = if double_rate { risenlab::xmot::resample_double_rate(&tracks) } else { tracks };
             println!("{}", serde_json::to_string(&tracks)?);
         }
         Commands::ActorSkinnedMesh { archive, entry_path } => {
@@ -455,26 +487,34 @@ fn main() -> anyhow::Result<()> {
             archive,
             entry_path,
             bone_names_json,
-            strength,
+            smooth,
+            expressiveness,
+            secondary,
+            sharpness,
             patch_dir,
             group,
         } => {
             let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
-            let patch = batch::export_motion_patch(&archive, &entry_path, &bone_names, strength, &patch_dir, &group)?;
+            let style = batch::MotionStyle { smooth, expressiveness, secondary, sharpness };
+            let patch = batch::export_motion_patch(&archive, &entry_path, &bone_names, style, &patch_dir, &group)?;
             println!("{}", serde_json::to_string(&patch.to_string_lossy())?);
         }
         Commands::ExportMotionPatchBatch {
             archive,
             entries_json,
             bone_names_json,
-            strength,
+            smooth,
+            expressiveness,
+            secondary,
+            sharpness,
             patch_dir,
             group,
         } => {
             let entries: Vec<String> = serde_json::from_str(&entries_json)?;
             let bone_names: Vec<String> = serde_json::from_str(&bone_names_json)?;
+            let style = batch::MotionStyle { smooth, expressiveness, secondary, sharpness };
             let (patch, failed) =
-                batch::export_motion_patch_batch(&archive, &entries, &bone_names, strength, &patch_dir, &group)?;
+                batch::export_motion_patch_batch(&archive, &entries, &bone_names, style, &patch_dir, &group)?;
             println!(
                 "{}",
                 serde_json::json!({ "patch": patch.to_string_lossy(), "failed": failed })

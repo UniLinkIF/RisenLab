@@ -585,15 +585,26 @@ pub fn uninstall_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec
     Ok(removed)
 }
 
-/// Batch counterpart of `export_motion_patch`: smooths MANY clips (typically every animation
-/// of one creature — they share the actor's skeleton, so one bone-name list fits all) and
-/// packs them into a SINGLE `<stem>.pNN` patch volume. Clips that fail to parse are skipped
-/// (returned in the error list) rather than aborting the whole creature.
+/// The four independently-toggleable local motion transforms (`xmot::stylize_tracks` plus the
+/// pre-existing jitter filter), bundled so every write-side entry point below takes one value
+/// instead of a growing positional-argument list. All default to `0.0` (no-op).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MotionStyle {
+    pub smooth: f32,
+    pub expressiveness: f32,
+    pub secondary: f32,
+    pub sharpness: f32,
+}
+
+/// Batch counterpart of `export_motion_patch`: applies the same style to MANY clips (typically
+/// every animation of one creature — they share the actor's skeleton, so one bone-name list
+/// fits all) and packs them into a SINGLE `<stem>.pNN` patch volume. Clips that fail to parse
+/// are skipped (returned in the error list) rather than aborting the whole creature.
 pub fn export_motion_patch_batch(
     archive_path: &Path,
     entry_paths: &[String],
     bone_names: &[String],
-    strength: f32,
+    style: MotionStyle,
     patch_dir: &Path,
     group: &str,
 ) -> Result<(PathBuf, Vec<String>)> {
@@ -603,7 +614,7 @@ pub fn export_motion_patch_batch(
     let mut staged_any = false;
     for entry_path in entry_paths {
         let staged = stage_dir.join(entry_path.trim_start_matches('/'));
-        match smooth_motion_to_file(archive_path, entry_path, bone_names, strength, &staged) {
+        match style_motion_to_file(archive_path, entry_path, bone_names, style, &staged) {
             Ok(()) => staged_any = true,
             Err(e) => failed.push(format!("{entry_path}: {e:#}")),
         }
@@ -621,8 +632,8 @@ pub fn export_motion_patch_batch(
     Ok((patch_path, failed))
 }
 
-/// The complete "enhance this animation → installable mod file" chain: smooths one clip
-/// (`smooth_motion_to_file`), stages it under its real entry path, and packs a fresh
+/// The complete "enhance this animation → installable mod file" chain: styles one clip
+/// (`style_motion_to_file`), stages it under its real entry path, and packs a fresh
 /// `<stem>.pNN` patch volume into `patch_dir/<group>/` using the source archive family's own
 /// storage convention (`animations.pak` = ZLib entries — see `pak::write_archive_from_dir_with`).
 /// Returns the patch path, ready for `install_patches`.
@@ -630,14 +641,14 @@ pub fn export_motion_patch(
     archive_path: &Path,
     entry_path: &str,
     bone_names: &[String],
-    strength: f32,
+    style: MotionStyle,
     patch_dir: &Path,
     group: &str,
 ) -> Result<PathBuf> {
     let stage_dir = patch_dir.join("_motion_stage");
     let _ = fs::remove_dir_all(&stage_dir);
     let staged = stage_dir.join(entry_path.trim_start_matches('/'));
-    smooth_motion_to_file(archive_path, entry_path, bone_names, strength, &staged)?;
+    style_motion_to_file(archive_path, entry_path, bone_names, style, &staged)?;
 
     let patch_path = next_patch_path(archive_path, patch_dir, group)?;
     if let Some(parent) = patch_path.parent() {
@@ -648,28 +659,31 @@ pub fn export_motion_patch(
     Ok(patch_path)
 }
 
-/// Real, local motion cleanup end-to-end: reads one clip from its archive, low-pass-filters
-/// every animated bone's tracks (`xmot::smooth_tracks`), patches the key values back IN PLACE
-/// (`xmot::patch_motion_keys` — same counts/sizes, so the whole file structure incl. every
-/// not-yet-decoded wrapper field survives byte-for-byte) and writes the result to `out_path`.
-/// `strength` 0.0..1.0; at 0.0 the output is verifiably byte-identical to the original entry —
-/// the built-in correctness check for the whole read→locate→write chain.
-pub fn smooth_motion_to_file(
-    archive_path: &Path,
-    entry_path: &str,
-    bone_names: &[String],
-    strength: f32,
-    out_path: &Path,
-) -> Result<()> {
+/// Real, local (no external AI) motion cleanup+stylization end-to-end: reads one clip from its
+/// archive, runs the jitter filter (`xmot::smooth_tracks`) and/or the three quality transforms
+/// (`xmot::stylize_tracks` — amplitude boost / secondary motion / attack retiming, each
+/// independently toggled by `style`), patches the key values (and, for retiming, the key
+/// TIMES) back IN PLACE (`xmot::patch_motion_keys` — same counts/sizes, so the whole file
+/// structure incl. every not-yet-decoded wrapper field survives byte-for-byte) and writes the
+/// result to `out_path`. An all-zero `style` produces output verifiably byte-identical to the
+/// original entry — the built-in correctness check for the whole read→locate→write chain.
+pub fn style_motion_to_file(archive_path: &Path, entry_path: &str, bone_names: &[String], style: MotionStyle, out_path: &Path) -> Result<()> {
     let data = read_raw_entry_bytes(archive_path, entry_path)?;
     let tracks = xmot::parse_motion(&data, bone_names)?;
-    let smoothed = xmot::smooth_tracks(&tracks, strength);
-    let patched = xmot::patch_motion_keys(&data, &smoothed)?;
+    let smoothed = xmot::smooth_tracks(&tracks, style.smooth);
+    let styled = xmot::stylize_tracks(&smoothed, style.expressiveness, style.secondary, style.sharpness);
+    let patched = xmot::patch_motion_keys(&data, &styled)?;
     if let Some(parent) = out_path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(out_path, patched).with_context(|| format!("writing {}", out_path.display()))?;
     Ok(())
+}
+
+/// Back-compat alias kept for the CLI's standalone `smooth-motion` command (jitter filter only,
+/// no expressiveness/secondary/retiming) — see `style_motion_to_file` for the general path.
+pub fn smooth_motion_to_file(archive_path: &Path, entry_path: &str, bone_names: &[String], strength: f32, out_path: &Path) -> Result<()> {
+    style_motion_to_file(archive_path, entry_path, bone_names, MotionStyle { smooth: strength, ..Default::default() }, out_path)
 }
 
 /// A real actor's skinned mesh (positions/normals/UVs/faces/per-vertex bone weights), parsed

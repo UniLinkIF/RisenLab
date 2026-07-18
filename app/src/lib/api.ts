@@ -145,16 +145,31 @@ export async function actorSkeleton(archivePath: string, entryPath: string): Pro
   });
 }
 
+/** The four independently-toggleable local motion transforms — jitter cleanup plus the three
+ * "animation quality" ones (`expressiveness`/`secondary`/`sharpness`, see `xmot::stylize_tracks`
+ * on the Rust side). All default to 0 (no-op). `doubleRate` is a separate, PREVIEW-ONLY fifth
+ * toggle (`xmot::resample_double_rate`, "🎬 60fps") — it changes key counts, which can't be
+ * written back to a real `.xmot` file in place, so `motionTracks` accepts it but the export
+ * functions below deliberately don't. */
+export interface MotionStyle {
+  smooth?: number;
+  expressiveness?: number;
+  secondary?: number;
+  sharpness?: number;
+  doubleRate?: boolean;
+}
+
 export async function motionTracks(
   archivePath: string,
   entryPath: string,
   boneNames: string[],
-  smooth = 0,
+  style: MotionStyle = {},
 ): Promise<BoneMotion[]> {
-  if (isTauri()) return invoke<BoneMotion[]>("motion_tracks", { archivePath, entryPath, boneNames, smooth });
+  const { smooth = 0, expressiveness = 0, secondary = 0, sharpness = 0, doubleRate = false } = style;
+  if (isTauri()) return invoke<BoneMotion[]>("motion_tracks", { archivePath, entryPath, boneNames, smooth, expressiveness, secondary, sharpness, doubleRate });
   const boneNamesJson = encodeURIComponent(JSON.stringify(boneNames));
   return api<BoneMotion[]>(
-    `motion-tracks?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}&boneNames=${boneNamesJson}&smooth=${smooth}`,
+    `motion-tracks?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}&boneNames=${boneNamesJson}&smooth=${smooth}&expressiveness=${expressiveness}&secondary=${secondary}&sharpness=${sharpness}&doubleRate=${doubleRate}`,
   );
 }
 
@@ -241,35 +256,37 @@ export async function uninstallPatches(): Promise<string[]> {
   return api<string[]>("uninstall-patches", { method: "POST" });
 }
 
-/** Smooths MANY clips (e.g. every animation of one creature) into a SINGLE `.pNN` patch
- * volume. Returns the patch path plus per-clip failures (skipped, not fatal). */
+/** Styles MANY clips the same way (e.g. every animation of one creature) into a SINGLE `.pNN`
+ * patch volume. Returns the patch path plus per-clip failures (skipped, not fatal). */
 export async function exportMotionPatchBatch(
   archivePath: string,
   entryPaths: string[],
   boneNames: string[],
-  strength: number,
+  style: MotionStyle,
 ): Promise<{ patch: string; failed: string[] }> {
-  if (isTauri()) return invoke<{ patch: string; failed: string[] }>("export_motion_patch_batch", { archivePath, entryPaths, boneNames, strength });
+  const { smooth = 0, expressiveness = 0, secondary = 0, sharpness = 0 } = style;
+  if (isTauri()) return invoke<{ patch: string; failed: string[] }>("export_motion_patch_batch", { archivePath, entryPaths, boneNames, smooth, expressiveness, secondary, sharpness });
   return api<{ patch: string; failed: string[] }>("export-motion-patch-batch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ archivePath, entryPaths, boneNames, strength }),
+    body: JSON.stringify({ archivePath, entryPaths, boneNames, smooth, expressiveness, secondary, sharpness }),
   });
 }
 
-/** Smooths one clip and packs it straight into a fresh animations `.pNN` patch volume —
+/** Styles one clip and packs it straight into a fresh animations `.pNN` patch volume —
  * returns the patch file path (install with `installPatches`). */
 export async function exportMotionPatch(
   archivePath: string,
   entryPath: string,
   boneNames: string[],
-  strength: number,
+  style: MotionStyle,
 ): Promise<string> {
-  if (isTauri()) return invoke<string>("export_motion_patch", { archivePath, entryPath, boneNames, strength });
+  const { smooth = 0, expressiveness = 0, secondary = 0, sharpness = 0 } = style;
+  if (isTauri()) return invoke<string>("export_motion_patch", { archivePath, entryPath, boneNames, smooth, expressiveness, secondary, sharpness });
   const res = await api<{ patch: string }>("export-motion-patch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ archivePath, entryPath, boneNames, strength }),
+    body: JSON.stringify({ archivePath, entryPath, boneNames, smooth, expressiveness, secondary, sharpness }),
   });
   return res.patch;
 }

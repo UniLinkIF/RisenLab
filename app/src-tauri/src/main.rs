@@ -263,11 +263,23 @@ fn motion_tracks(
     entry_path: String,
     bone_names: Vec<String>,
     smooth: Option<f32>,
+    expressiveness: Option<f32>,
+    secondary: Option<f32>,
+    sharpness: Option<f32>,
+    double_rate: Option<bool>,
 ) -> Result<Vec<risenlab::xmot::BoneMotion>, String> {
     batch::motion_tracks(&PathBuf::from(archive_path), &entry_path, &bone_names)
-        .map(|tracks| match smooth {
-            Some(s) if s > 0.0 => risenlab::xmot::smooth_tracks(&tracks, s),
-            _ => tracks,
+        .map(|tracks| {
+            let tracks = match smooth {
+                Some(s) if s > 0.0 => risenlab::xmot::smooth_tracks(&tracks, s),
+                _ => tracks,
+            };
+            let tracks = risenlab::xmot::stylize_tracks(&tracks, expressiveness.unwrap_or(0.0), secondary.unwrap_or(0.0), sharpness.unwrap_or(0.0));
+            if double_rate.unwrap_or(false) {
+                risenlab::xmot::resample_double_rate(&tracks)
+            } else {
+                tracks
+            }
         })
         .map_err(|e| e.to_string())
 }
@@ -370,10 +382,19 @@ fn export_motion_patch(
     archive_path: String,
     entry_path: String,
     bone_names: Vec<String>,
-    strength: f32,
+    smooth: f32,
+    expressiveness: Option<f32>,
+    secondary: Option<f32>,
+    sharpness: Option<f32>,
 ) -> Result<String, String> {
     let patch_dir = PathBuf::from(state.settings.lock().unwrap().patch_dir.clone());
-    batch::export_motion_patch(&PathBuf::from(archive_path), &entry_path, &bone_names, strength, &patch_dir, "compiled")
+    let style = batch::MotionStyle {
+        smooth,
+        expressiveness: expressiveness.unwrap_or(0.0),
+        secondary: secondary.unwrap_or(0.0),
+        sharpness: sharpness.unwrap_or(0.0),
+    };
+    batch::export_motion_patch(&PathBuf::from(archive_path), &entry_path, &bone_names, style, &patch_dir, "compiled")
         .map(|p| p.to_string_lossy().into_owned())
         .map_err(|e| e.to_string())
 }
@@ -390,10 +411,19 @@ fn export_motion_patch_batch(
     archive_path: String,
     entry_paths: Vec<String>,
     bone_names: Vec<String>,
-    strength: f32,
+    smooth: f32,
+    expressiveness: Option<f32>,
+    secondary: Option<f32>,
+    sharpness: Option<f32>,
 ) -> Result<MotionPatchBatchResult, String> {
     let patch_dir = PathBuf::from(state.settings.lock().unwrap().patch_dir.clone());
-    batch::export_motion_patch_batch(&PathBuf::from(archive_path), &entry_paths, &bone_names, strength, &patch_dir, "compiled")
+    let style = batch::MotionStyle {
+        smooth,
+        expressiveness: expressiveness.unwrap_or(0.0),
+        secondary: secondary.unwrap_or(0.0),
+        sharpness: sharpness.unwrap_or(0.0),
+    };
+    batch::export_motion_patch_batch(&PathBuf::from(archive_path), &entry_paths, &bone_names, style, &patch_dir, "compiled")
         .map(|(p, failed)| MotionPatchBatchResult { patch: p.to_string_lossy().into_owned(), failed })
         .map_err(|e| e.to_string())
 }
