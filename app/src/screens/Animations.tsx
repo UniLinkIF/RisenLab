@@ -133,6 +133,10 @@ export default function Animations({ lang }: Props) {
   const [enhancing, setEnhancing] = useState(false);
   const [showEnhanced, setShowEnhanced] = useState(false);
   const [enhancedRels, setEnhancedRels] = useState<Set<string>>(new Set());
+  // 2-object original/enhanced TEXTURE comparison (owner request, 2026-07-19 — distinct from
+  // the motion `sideBySide` below, which compares POSES not textures). Mutually exclusive with
+  // motion side-by-side so the viewer never has to render a 4-way split.
+  const [textureSideBySide, setTextureSideBySide] = useState(false);
   const [motionTracksData, setMotionTracksData] = useState<BoneMotion[] | null>(null);
   const [tracksLoading, setTracksLoading] = useState(false);
   // Jitter-cleanup preview strength (0 = original clip; the filtering itself runs in Rust —
@@ -315,6 +319,27 @@ export default function Animations({ lang }: Props) {
       return readTextureDataUrl(entry.pngRel);
     },
     [textures, showEnhanced, enhancedRels],
+  );
+
+  // The two fixed resolvers behind "⿻ Текстури поруч" (owner request, 2026-07-19: a real
+  // 2-object original/enhanced TEXTURE comparison for animated actors, distinct from
+  // `resolveTexture` above which follows the single `showEnhanced` toggle) — one side always
+  // shows the untouched library texture, the other always shows the `edited/` variant where one
+  // exists (falls back to original for any material that wasn't part of this enhance batch).
+  const resolveTextureOriginal = useCallback(
+    async (baseName: string) => {
+      const entry = findTextureEntryForBaseName(textures, baseName);
+      return entry ? readTextureDataUrl(entry.pngRel) : null;
+    },
+    [textures],
+  );
+  const resolveTextureEnhanced = useCallback(
+    async (baseName: string) => {
+      const entry = findTextureEntryForBaseName(textures, baseName);
+      if (!entry) return null;
+      return enhancedRels.has(entry.pngRel) ? readEditedDataUrl(entry.pngRel) : readTextureDataUrl(entry.pngRel);
+    },
+    [textures, enhancedRels],
   );
 
   // Every distinct diffuse texture the selected actor's own materials reference — the real
@@ -526,6 +551,49 @@ export default function Animations({ lang }: Props) {
               <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
                 {lang === "uk" ? "Оберіть персонажа зліва" : "Select a character on the left"}
               </div>
+            ) : textureSideBySide && enhancedRels.size > 0 && (motionTracksData ? true : !!objUrl) ? (
+              <div style={{ height: "100%", display: "flex", gap: 2 }}>
+                {([
+                  [lang === "uk" ? "Оригінал" : "Original", resolveTextureOriginal],
+                  [lang === "uk" ? "Покращено" : "Enhanced", resolveTextureEnhanced],
+                ] as [string, (baseName: string) => Promise<string | null>][]).map(([label, resolver], i) =>
+                  selectedMotion && motionTracksData ? (
+                    <div key={i} style={{ flex: 1, position: "relative", minWidth: 0, borderLeft: i === 1 ? "1px solid var(--border)" : "none" }}>
+                      <SkeletonAnimationViewer
+                        key={`${selectedActor.entryPath}::${selectedMotion.entryPath}::texsxs${i}`}
+                        nodes={skeletonNodes}
+                        tracks={abOriginal && originalTracks ? originalTracks : motionTracksData}
+                        playing={playing}
+                        showSkeleton={showSkeleton}
+                        mirrorSkeleton={mirrorSkeleton}
+                        mirrorMesh={mirrorMesh}
+                        skinnedMesh={skinnedMeshData}
+                        objUrl={objUrl}
+                        diffuseUrl={diffuseUrl}
+                        normalUrl={normalUrl}
+                        resolveTexture={resolver}
+                      />
+                      <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
+                        {label}
+                      </div>
+                    </div>
+                  ) : (
+                    <div key={i} style={{ flex: 1, position: "relative", minWidth: 0, borderLeft: i === 1 ? "1px solid var(--border)" : "none" }}>
+                      <Model3DViewer
+                        key={`${selectedActor.entryPath}::texsxs${i}`}
+                        objUrl={objUrl ?? ""}
+                        diffuseUrl={diffuseUrl}
+                        normalUrl={normalUrl}
+                        mode={mode}
+                        resolveTexture={resolver}
+                      />
+                      <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
+                        {label}
+                      </div>
+                    </div>
+                  ),
+                )}
+              </div>
             ) : selectedMotion && motionTracksData && sideBySide && originalTracks && previewActive ? (
               <div style={{ height: "100%", display: "flex", gap: 2 }}>
                 {([
@@ -651,23 +719,48 @@ export default function Animations({ lang }: Props) {
                     : lang === "uk" ? `✨ Покращити текстури (${actorDiffuseEntries.length})` : `✨ Enhance textures (${actorDiffuseEntries.length})`}
                 </button>
                 {enhancedRels.size > 0 ? (
-                  <button
-                    onClick={() => setShowEnhanced((v) => !v)}
-                    style={{
-                      width: "100%",
-                      marginTop: 6,
-                      padding: "6px 10px",
-                      borderRadius: 10,
-                      background: showEnhanced ? "var(--accent)" : "var(--bg2)",
-                      border: `1px solid ${showEnhanced ? "var(--accent)" : "var(--border)"}`,
-                      font: "600 10.5px system-ui",
-                      color: showEnhanced ? "#fff" : "var(--text-dim)",
-                    }}
-                  >
-                    {showEnhanced
-                      ? lang === "uk" ? "Показано: покращені" : "Showing: enhanced"
-                      : lang === "uk" ? "Показано: оригінал" : "Showing: original"}
-                  </button>
+                  <>
+                    <button
+                      onClick={() => setShowEnhanced((v) => !v)}
+                      style={{
+                        width: "100%",
+                        marginTop: 6,
+                        padding: "6px 10px",
+                        borderRadius: 10,
+                        background: showEnhanced ? "var(--accent)" : "var(--bg2)",
+                        border: `1px solid ${showEnhanced ? "var(--accent)" : "var(--border)"}`,
+                        font: "600 10.5px system-ui",
+                        color: showEnhanced ? "#fff" : "var(--text-dim)",
+                      }}
+                    >
+                      {showEnhanced
+                        ? lang === "uk" ? "Показано: покращені" : "Showing: enhanced"
+                        : lang === "uk" ? "Показано: оригінал" : "Showing: original"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setTextureSideBySide((v) => !v);
+                        setSideBySide(false);
+                      }}
+                      title={
+                        lang === "uk"
+                          ? "Два об'єкти одночасно: зліва оригінальні текстури, справа покращені — та сама поза/анімація."
+                          : "Two objects at once: original textures left, enhanced right — same pose/animation."
+                      }
+                      style={{
+                        width: "100%",
+                        marginTop: 6,
+                        padding: "6px 10px",
+                        borderRadius: 10,
+                        background: textureSideBySide ? "var(--accent)" : "var(--bg2)",
+                        border: `1px solid ${textureSideBySide ? "var(--accent)" : "var(--border)"}`,
+                        font: "600 10.5px system-ui",
+                        color: textureSideBySide ? "#fff" : "var(--text-dim)",
+                      }}
+                    >
+                      {lang === "uk" ? "⿻ Текстури поруч" : "⿻ Textures side by side"}
+                    </button>
+                  </>
                 ) : null}
               </>
             ) : null}
@@ -915,7 +1008,10 @@ export default function Animations({ lang }: Props) {
                         {abOriginal ? (lang === "uk" ? "👁 Оригінал" : "👁 Original") : "A/B"}
                       </button>
                       <button
-                        onClick={() => setSideBySide((v) => !v)}
+                        onClick={() => {
+                          setSideBySide((v) => !v);
+                          setTextureSideBySide(false);
+                        }}
                         title={
                           lang === "uk"
                             ? "Дві анімації одночасно: зліва оригінал, справа стилізована (спільні пауза/грати)."
