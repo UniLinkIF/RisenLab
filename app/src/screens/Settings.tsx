@@ -313,8 +313,8 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
             />
             {([
-              [null, 0.5, false, lang === "uk" ? "Покращити" : "Enhance", lang === "uk" ? "real-esrgan: чесне збільшення роздільності, колір/малюнок не змінюються" : "real-esrgan: honest resolution upscale, color/pattern unchanged"],
-              ["philz1337x/clarity-upscaler", 0.85, true, lang === "uk" ? "✨ Нові текстури" : "✨ New textures", lang === "uk" ? "ШІ бере лише силует з оригіналу і МАЛЮЄ текстуру заново — справжня нова картинка, не фільтр" : "AI keeps only the original's silhouette and PAINTS the texture from scratch — a real new image, not a filter"],
+              ["philz1337x/clarity-upscaler", 0.5, false, lang === "uk" ? "Покращити" : "Enhance", lang === "uk" ? "Той самий кадр, та сама композиція — але з набагато детальнішою текстурою (шкіра/метал/тканина), справжній ремастер, не фільтр" : "The exact same picture, same composition — but with dramatically more detailed surface texture, a real remaster, not a filter"],
+              ["stability-ai/sdxl", 0.85, true, lang === "uk" ? "✨ Нові текстури" : "✨ New textures", lang === "uk" ? "ШІ бере лише силует з оригіналу і МАЛЮЄ текстуру заново — справжня нова картинка, не фільтр" : "AI keeps only the original's silhouette and PAINTS the texture from scratch — a real new image, not a filter"],
             ] as [string | null, number, boolean, string, string][]).map(([model, creativity, regenerate, label, hint]) => {
               const active = (settings.aiModel ?? null) === model && Boolean(settings.aiRegenerate) === regenerate;
               return (

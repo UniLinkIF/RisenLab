@@ -155,18 +155,26 @@ pub fn texture_prompt_regenerate(png_rel: &str) -> String {
         "medieval architecture: plaster, brick, carved stone and timber"
     } else if lower.contains("cloth") || lower.contains("cape") || lower.contains("robe") {
         "woven cloth, linen and rough medieval fabric"
+    } else if lower.contains("gui") || lower.contains("loadinghint") || lower.contains("menu") || lower.contains("splash") {
+        // Full-scene concept-art (loading screens, menu backgrounds) — NOT a tileable material,
+        // a real illustrated scene with real subject matter. A "surface material" description
+        // here (the old generic fallback) told the model this was a flat texture swatch, which
+        // combined with a too-high strength produced a completely unrelated fantasy illustration
+        // instead of a repaint of the actual scene (real incident, 2026-07-19).
+        "dark fantasy concept-art illustration — the same characters, objects and scene composition as the input, painted with dramatically richer detail"
     } else {
-        "game asset surface material"
+        "photorealistic game asset material, matching the input's own real subject matter"
     };
     format!(
-        "Completely repaint this video game texture as a brand-new, dramatically higher-fidelity \
+        "Completely repaint this video game image as a brand-new, dramatically higher-fidelity \
          {subject}. Do not just sharpen or clean up the input — invent fresh micro-detail, fresh \
          material variation, fresh color depth, fresh wear and grime: a genuinely new piece of \
-         concept-art-quality texture art for the same subject, not a filter over the original. \
-         Only the rough silhouette and overall shape may stay recognizable so it still roughly \
-         fits the same UV layout — everything else (exact colors, fine patterns, surface detail) \
-         should be freshly generated. Extremely detailed, 4k quality, no text, no watermark, no \
-         frame, no new unrelated objects."
+         concept-art-quality art. This MUST still depict the same subject, the same objects and \
+         the same overall composition as the input image — a repaint of THIS specific picture, \
+         never a different, unrelated scene or character. Only the exact colors and fine surface \
+         detail should be freshly generated; the silhouette, pose, layout and subject identity \
+         must stay recognizable. Extremely detailed, 4k quality, no text, no watermark, no frame, \
+         no new unrelated objects, no different character."
     )
 }
 
@@ -182,45 +190,43 @@ pub fn is_data_map(png_rel: &str) -> bool {
 /// real-esrgan) take `image` + `scale`; anything else is treated as an img2img refiner and
 /// additionally gets the category prompt.
 ///
-/// **Regenerate mode is ALWAYS routed through clarity-upscaler's params, regardless of the
-/// configured `model` string** (added 2026-07-19, after `stability-ai/sdxl` — the model the
-/// generic img2img branch below was originally built for — turned out to 404 on Replicate's
-/// `/v1/models/{owner}/{name}/predictions` endpoint: confirmed live via a direct CLI call,
-/// "Replicate error: The requested resource could not be found." Every "✨ Нові текстури"
-/// attempt was silently failing and falling back to a plain Lanczos upscale — see the
-/// risenlab-texture-render-fixes memory for the "0 diff" incident this caused). clarity-upscaler
-/// is a model that's actually been confirmed working across many prior sessions; regenerate mode
-/// pushes its own creativity/resemblance dial to the far end (near-max creativity, near-min
-/// resemblance) instead of trusting an unverified model slug. The generic img2img branch at the
-/// bottom is kept for anyone who types a genuinely different custom model into the free-text
-/// field — untouched by this incident, still worth keeping as an option.
+/// **Regenerate mode does NOT force clarity-upscaler** (tried that briefly on 2026-07-19, see
+/// git history — reverted the same day). clarity-upscaler is a *tiled* diffusion upscaler (its
+/// own docs: "Tiled Diffusion... Tile count: 4"): at low creativity the tiles stay coherent with
+/// each other and the source, which is exactly why it makes a good faithful "Ремастер" mode —
+/// but pushed to near-max creativity/near-min resemblance to force a real reimagine, each tile
+/// hallucinates almost independently, producing an incoherent grid of unrelated content (real
+/// example: an ogre portrait became a collage of unrelated sci-fi faces). Wrong tool for "throw
+/// away the original, keep the rough shape" — that needs a normal *global* (non-tiled) img2img
+/// model, which the generic branch below already targets. The REAL, final root cause of the
+/// whole "AI regenerate does nothing" saga was `resolve_model_version` (see its doc comment) —
+/// once that's fixed, any real model (clarity or a normal SDXL img2img model) works via its own
+/// natural branch below; no model needs special-casing.
 pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32, creativity: f32, regenerate: bool) -> serde_json::Value {
     let creativity = creativity.clamp(0.1, 0.9);
-    if model.to_lowercase().contains("clarity") || (regenerate && !model.to_lowercase().contains("esrgan")) {
+    if model.to_lowercase().contains("clarity") {
+        // philz1337x/clarity-upscaler — an upscaler that ADDS detail (tiled SD guided by the
+        // prompt) instead of real-esrgan's smoothing. `creativity` is the mode dial: ~0.5
+        // re-details faithfully, ~0.75 visibly re-imagines patterns ("Ремастер" mode);
+        // resemblance moves opposite so the two knobs don't fight each other. Regenerate mode
+        // nudges both further but stays well short of the incoherent-tile-collage cliff (see the
+        // function doc comment) — this is the "someone explicitly typed clarity into the model
+        // field" path, not the default "✨ Нові текстури" one.
         let prompt = if regenerate { texture_prompt_regenerate(png_rel) } else { texture_prompt(png_rel) };
-        let negative_prompt = if regenerate {
-            "blurry, low detail, flat, plain, same as input, watermark, text, frame"
+        let (effective_creativity, resemblance) = if regenerate {
+            (creativity.max(0.8), (1.5 - creativity).clamp(0.35, 0.6))
         } else {
-            "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark"
-        };
-        // Faithful mode: ~0.5 re-details faithfully, ~0.75 visibly re-imagines patterns
-        // ("Ремастер"), resemblance moves opposite so the two knobs don't fight. Regenerate mode
-        // pins both dials near their far end regardless of the creativity setting — this is the
-        // "throw away the original, keep only the rough shape" mode, not a matter of degree.
-        let (effective_creativity, resemblance, steps) = if regenerate {
-            (creativity.max(0.85), (1.5 - creativity).clamp(0.1, 0.4), 30)
-        } else {
-            (creativity, (1.5 - creativity).clamp(0.5, 1.4), 22)
+            (creativity, (1.5 - creativity).clamp(0.5, 1.4))
         };
         return serde_json::json!({
             "image": image_data_uri,
             "prompt": prompt,
-            "negative_prompt": negative_prompt,
+            "negative_prompt": "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark",
             "scale_factor": scale.clamp(2, 4),
             "creativity": effective_creativity,
             "resemblance": resemblance,
             "dynamic": 12,
-            "num_inference_steps": steps,
+            "num_inference_steps": 22,
         });
     }
     if model.to_lowercase().contains("esrgan") {
@@ -231,11 +237,17 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
         });
     }
     if regenerate {
+        // Real incident (2026-07-19): strength this close to 1.0 makes SDXL-family img2img
+        // models ignore the input image almost entirely — the "AI variant" came back as a
+        // completely unrelated fantasy-warrior illustration with zero connection to the actual
+        // source (an ogre portrait), because at ~0.9 strength there's essentially nothing left
+        // of the original for the model to build on. Capped well below that so the model still
+        // treats the input as its starting point, not a hint.
         serde_json::json!({
             "image": image_data_uri,
             "prompt": texture_prompt_regenerate(png_rel),
             "negative_prompt": "blurry, low detail, flat, plain, same as input, watermark, text, frame",
-            "strength": (0.55 + creativity * 0.4).clamp(0.6, 0.95),
+            "strength": (0.45 + creativity * 0.3).clamp(0.45, 0.7),
             "guidance_scale": 8.5,
         })
     } else {
@@ -343,20 +355,77 @@ fn enhance_via_stability(cfg: &AiConfig, src_png: &Path, png_rel: &str) -> Resul
     Ok(out)
 }
 
+/// Resolves `owner/name` to its current default version id via Replicate's model metadata
+/// endpoint (a free, read-only GET — no prediction/compute cost, doesn't touch the owner's
+/// credit). **Necessary, not optional**: the shorthand `POST /v1/models/{owner}/{name}/predictions`
+/// endpoint only works for a subset of models — confirmed empirically (2026-07-19) that
+/// `philz1337x/clarity-upscaler` (a real, public, 29.8M-run model) 404s
+/// ("The requested resource could not be found") on that shortcut despite existing and being
+/// perfectly reachable via this metadata endpoint. This was the actual, final root cause of an
+/// extended "AI regenerate does nothing" incident — every non-real-esrgan model silently 404'd
+/// and fell back to a plain Lanczos upscale, previously misdiagnosed as low Replicate credit
+/// (a real, separate, simultaneously-true issue) and as a bad model choice. The classic
+/// `POST /v1/predictions` endpoint with an explicit `"version"` hash works universally.
+fn resolve_model_version(api_key: &str, model: &str) -> Result<String> {
+    let url = format!("https://api.replicate.com/v1/models/{model}");
+    let info = curl_json_with_bearer(api_key, &[&url]).with_context(|| format!("looking up Replicate model {model}"))?;
+    info.get("latest_version")
+        .and_then(|v| v.get("id"))
+        .and_then(|id| id.as_str())
+        .map(String::from)
+        .ok_or_else(|| anyhow!("Replicate model '{model}' has no latest_version — check the owner/name is correct and the model is public"))
+}
+
+/// SDXL (and similar generation-first, non-tiled img2img models) run out of GPU memory on a
+/// full-resolution game texture: confirmed live (2026-07-19) — a 2048x2048 input to
+/// `stability-ai/sdxl` failed with "CUDA out of memory. Tried to allocate 16.00 GiB". Upscalers
+/// (real-esrgan, clarity-upscaler) are built to tile arbitrarily large images and don't hit
+/// this — only the generic-img2img "regenerate" path needs the source downscaled first. The
+/// output comes back near this capped size, which the caller's own local Lanczos step downstream
+/// (see `batch::regenerate`) already exists to size back up to the texture's real target.
+const IMG2IMG_MAX_EDGE: u32 = 1024;
+
+fn downscale_for_img2img(bytes: &[u8]) -> Result<Vec<u8>> {
+    let img = image::load_from_memory(bytes).context("decoding source PNG for img2img downscale")?;
+    let (w, h) = (img.width(), img.height());
+    if w.max(h) <= IMG2IMG_MAX_EDGE {
+        return Ok(bytes.to_vec());
+    }
+    let scale = IMG2IMG_MAX_EDGE as f32 / w.max(h) as f32;
+    let (new_w, new_h) = ((w as f32 * scale).round().max(1.0) as u32, (h as f32 * scale).round().max(1.0) as u32);
+    let resized = image::imageops::resize(&img, new_w, new_h, image::imageops::FilterType::Lanczos3);
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(resized)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .context("re-encoding downscaled img2img source")?;
+    Ok(out)
+}
+
 fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u32) -> Result<Vec<u8>> {
     let bytes = std::fs::read(src_png).with_context(|| format!("reading {}", src_png.display()))?;
+    let (orig_w, orig_h) = image::image_dimensions(src_png).with_context(|| format!("reading dimensions of {}", src_png.display()))?;
+    // Only the generic img2img branch (non-clarity, non-esrgan) needs this — see
+    // IMG2IMG_MAX_EDGE's doc comment.
+    let is_generic_img2img = !cfg.model.to_lowercase().contains("clarity") && !cfg.model.to_lowercase().contains("esrgan");
+    let bytes = if is_generic_img2img { downscale_for_img2img(&bytes)? } else { bytes };
     let data_uri = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
 
+    let version = resolve_model_version(&cfg.api_key, &cfg.model)?;
+
     // Request body → temp file (megabytes of base64 blow past the command-line length limit).
-    let body = serde_json::json!({ "input": build_input(&cfg.model, &data_uri, png_rel, scale, cfg.creativity, cfg.regenerate) });
+    let body = serde_json::json!({
+        "version": version,
+        "input": build_input(&cfg.model, &data_uri, png_rel, scale, cfg.creativity, cfg.regenerate),
+    });
     let body_path = std::env::temp_dir().join(format!("risenlab_ai_{}.json", std::process::id()));
     std::fs::write(&body_path, serde_json::to_vec(&body)?).context("writing request body temp file")?;
     let body_arg = format!("@{}", body_path.display());
 
     // `Prefer: wait` holds the connection until the prediction finishes (up to ~60s on
     // Replicate's side) — most textures come back in this single round trip. Cold starts
-    // fall through to polling below.
-    let create_url = format!("https://api.replicate.com/v1/models/{}/predictions", cfg.model);
+    // fall through to polling below. The classic (non-shorthand) endpoint — see
+    // `resolve_model_version`'s doc comment for why the shorthand isn't used here.
+    let create_url = "https://api.replicate.com/v1/predictions".to_string();
     let created = curl_json_with_bearer(&cfg.api_key, &[
         "-X", "POST",
         "-H", "Content-Type: application/json",
@@ -408,6 +477,28 @@ fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u
     let out = curl_with_bearer(&cfg.api_key, &["-L", &url]).context("downloading enhanced image")?;
     if out.is_empty() {
         bail!("Replicate returned an empty image");
+    }
+    // The generic img2img model returns its own native resolution (e.g. SDXL's ~1024px),
+    // which can be SMALLER than the original texture (downscaled going in, see
+    // `downscale_for_img2img`) — upscale back up to at least the original size locally so the
+    // patched texture isn't a downgrade in-game. Upscalers (clarity/esrgan) already return
+    // `scale`x the original and never hit this.
+    if is_generic_img2img {
+        if let Ok(result_img) = image::load_from_memory(&out) {
+            let (rw, rh) = (result_img.width(), result_img.height());
+            if rw < orig_w || rh < orig_h {
+                let target_w = orig_w.max(rw);
+                let target_h = orig_h.max(rh);
+                let resized = image::imageops::resize(&result_img, target_w, target_h, image::imageops::FilterType::Lanczos3);
+                let mut upscaled = Vec::new();
+                if image::DynamicImage::ImageRgba8(resized)
+                    .write_to(&mut std::io::Cursor::new(&mut upscaled), image::ImageFormat::Png)
+                    .is_ok()
+                {
+                    return Ok(upscaled);
+                }
+            }
+        }
     }
     Ok(out)
 }
@@ -485,37 +576,37 @@ mod tests {
     }
 
     #[test]
-    fn regenerate_mode_routes_through_clarity_params_even_for_an_unrelated_model_string() {
-        // The core of the 2026-07-19 fix: "stability-ai/sdxl" 404s on Replicate (confirmed
-        // live), so regenerate mode must NOT depend on that (or any other) unverified model
-        // slug — it always uses clarity-upscaler's actually-working endpoint/params instead.
+    fn regenerate_mode_on_a_generic_img2img_model_uses_the_reimagine_prompt_and_moderate_strength() {
+        // "stability-ai/sdxl" is the default "✨ Нові текстури" model — a normal *global*
+        // (non-tiled) img2img SDXL model, the right tool for "reimagine while keeping the rough
+        // shape" (see the build_input doc comment for why clarity-upscaler's tiled architecture
+        // is NOT: pushed to extreme creativity it hallucinates each tile almost independently,
+        // producing an incoherent collage instead of one coherent new image). Strength is
+        // deliberately capped MODERATE, not maximal — a real incident (2026-07-19) showed
+        // strength ~0.9 makes the model ignore the input almost entirely, returning a completely
+        // unrelated illustration instead of a repaint of the actual source image.
         let v = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, true);
         let prompt = v.get("prompt").and_then(|p| p.as_str()).unwrap();
         assert!(prompt.contains("brand-new"), "{prompt}");
         assert!(!prompt.contains("EXACT same colors"), "regenerate mode must not pin exact colors: {prompt}");
-        // clarity-style params, NOT the generic-img2img "strength"/"guidance_scale" shape.
-        assert!(v.get("strength").is_none(), "regenerate must not use the unverified generic img2img branch");
-        assert_eq!(v.get("scale_factor").and_then(|x| x.as_u64()), Some(2));
-        let creativity = v.get("creativity").and_then(|c| c.as_f64()).unwrap();
-        let resemblance = v.get("resemblance").and_then(|r| r.as_f64()).unwrap();
-        assert!(creativity >= 0.849, "regenerate creativity should be pinned near max, got {creativity}");
-        assert!(resemblance <= 0.401, "regenerate resemblance should be pinned near min, got {resemblance}");
+        let strength = v.get("strength").and_then(|s| s.as_f64()).unwrap();
+        assert!(strength > 0.4 && strength <= 0.7, "regenerate strength should be moderate (repaint, not ignore input), got {strength}");
 
-        // Compare against the faithful clarity call (same branch, same JSON shape) at the same
-        // creativity dial — "stability-ai/sdxl" itself only reaches this "resemblance"-shaped
-        // branch at all when regenerate=true; non-regenerate falls to the unrelated generic
-        // img2img "strength"-shaped branch, so it isn't a like-for-like comparison.
-        let faithful = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, false);
-        let faithful_resemblance = faithful.get("resemblance").and_then(|r| r.as_f64()).unwrap();
-        assert!(resemblance < faithful_resemblance, "regenerate must diverge more than the faithful mode at the same creativity");
+        let faithful = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, false);
+        let faithful_strength = faithful.get("strength").and_then(|s| s.as_f64()).unwrap();
+        assert!(strength > faithful_strength, "regenerate must diverge more than the faithful mode at the same creativity");
     }
 
     #[test]
-    fn regenerate_mode_still_uses_clarity_params_when_model_is_explicitly_clarity() {
+    fn regenerate_mode_on_clarity_stays_short_of_the_incoherent_tile_collage_cliff() {
+        // Real incident (2026-07-19): pinning clarity-upscaler's creativity/resemblance to their
+        // absolute extremes (0.85+ / 0.1) turned an ogre portrait into a grid of unrelated faces
+        // — its tiled architecture stops being coherent past a point. Regenerate mode on clarity
+        // pushes further than faithful mode, but keeps resemblance off the floor.
         let v = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.5, true);
         assert!(v.get("prompt").and_then(|p| p.as_str()).unwrap().contains("brand-new"));
-        let creativity = v.get("creativity").and_then(|c| c.as_f64()).unwrap();
-        assert!((creativity - 0.85).abs() < 0.001, "regenerate floors creativity at 0.85 regardless of the dial, got {creativity}");
+        let resemblance = v.get("resemblance").and_then(|r| r.as_f64()).unwrap();
+        assert!(resemblance >= 0.34, "regenerate on clarity must stay off the incoherent-tile floor, got {resemblance}");
     }
 
     #[test]
