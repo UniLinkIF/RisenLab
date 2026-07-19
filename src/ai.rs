@@ -180,24 +180,47 @@ pub fn is_data_map(png_rel: &str) -> bool {
 
 /// Builds the Replicate `input` object for the configured model. Upscalers (the default
 /// real-esrgan) take `image` + `scale`; anything else is treated as an img2img refiner and
-/// additionally gets the category prompt with a conservative denoising strength (the texture
-/// must stay recognizably itself).
+/// additionally gets the category prompt.
+///
+/// **Regenerate mode is ALWAYS routed through clarity-upscaler's params, regardless of the
+/// configured `model` string** (added 2026-07-19, after `stability-ai/sdxl` — the model the
+/// generic img2img branch below was originally built for — turned out to 404 on Replicate's
+/// `/v1/models/{owner}/{name}/predictions` endpoint: confirmed live via a direct CLI call,
+/// "Replicate error: The requested resource could not be found." Every "✨ Нові текстури"
+/// attempt was silently failing and falling back to a plain Lanczos upscale — see the
+/// risenlab-texture-render-fixes memory for the "0 diff" incident this caused). clarity-upscaler
+/// is a model that's actually been confirmed working across many prior sessions; regenerate mode
+/// pushes its own creativity/resemblance dial to the far end (near-max creativity, near-min
+/// resemblance) instead of trusting an unverified model slug. The generic img2img branch at the
+/// bottom is kept for anyone who types a genuinely different custom model into the free-text
+/// field — untouched by this incident, still worth keeping as an option.
 pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32, creativity: f32, regenerate: bool) -> serde_json::Value {
     let creativity = creativity.clamp(0.1, 0.9);
-    if model.to_lowercase().contains("clarity") {
-        // philz1337x/clarity-upscaler — an upscaler that ADDS detail (tiled SD guided by the
-        // prompt) instead of real-esrgan's smoothing. `creativity` is the mode dial: ~0.5
-        // re-details faithfully, ~0.75 visibly re-imagines patterns ("Ремастер" mode);
-        // resemblance moves opposite so the two knobs don't fight each other.
+    if model.to_lowercase().contains("clarity") || (regenerate && !model.to_lowercase().contains("esrgan")) {
+        let prompt = if regenerate { texture_prompt_regenerate(png_rel) } else { texture_prompt(png_rel) };
+        let negative_prompt = if regenerate {
+            "blurry, low detail, flat, plain, same as input, watermark, text, frame"
+        } else {
+            "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark"
+        };
+        // Faithful mode: ~0.5 re-details faithfully, ~0.75 visibly re-imagines patterns
+        // ("Ремастер"), resemblance moves opposite so the two knobs don't fight. Regenerate mode
+        // pins both dials near their far end regardless of the creativity setting — this is the
+        // "throw away the original, keep only the rough shape" mode, not a matter of degree.
+        let (effective_creativity, resemblance, steps) = if regenerate {
+            (creativity.max(0.85), (1.5 - creativity).clamp(0.1, 0.4), 30)
+        } else {
+            (creativity, (1.5 - creativity).clamp(0.5, 1.4), 22)
+        };
         return serde_json::json!({
             "image": image_data_uri,
-            "prompt": texture_prompt(png_rel),
-            "negative_prompt": "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark",
+            "prompt": prompt,
+            "negative_prompt": negative_prompt,
             "scale_factor": scale.clamp(2, 4),
-            "creativity": creativity,
-            "resemblance": (1.5 - creativity).clamp(0.5, 1.4),
+            "creativity": effective_creativity,
+            "resemblance": resemblance,
             "dynamic": 12,
-            "num_inference_steps": 22,
+            "num_inference_steps": steps,
         });
     }
     if model.to_lowercase().contains("esrgan") {
@@ -208,10 +231,6 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
         });
     }
     if regenerate {
-        // "✨ Нові текстури": genuinely repaint, not re-detail. Strength this high mostly
-        // ignores the input's own colors/fine content (SDXL img2img denoising strength close to
-        // 1.0 == near txt2img) — only the coarse structure the early denoising steps see comes
-        // through, which is exactly "keep the silhouette, invent everything else".
         serde_json::json!({
             "image": image_data_uri,
             "prompt": texture_prompt_regenerate(png_rel),
@@ -466,17 +485,44 @@ mod tests {
     }
 
     #[test]
-    fn regenerate_mode_uses_the_reimagine_prompt_and_high_strength_and_does_not_pin_exact_colors() {
+    fn regenerate_mode_routes_through_clarity_params_even_for_an_unrelated_model_string() {
+        // The core of the 2026-07-19 fix: "stability-ai/sdxl" 404s on Replicate (confirmed
+        // live), so regenerate mode must NOT depend on that (or any other) unverified model
+        // slug — it always uses clarity-upscaler's actually-working endpoint/params instead.
         let v = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, true);
         let prompt = v.get("prompt").and_then(|p| p.as_str()).unwrap();
         assert!(prompt.contains("brand-new"), "{prompt}");
         assert!(!prompt.contains("EXACT same colors"), "regenerate mode must not pin exact colors: {prompt}");
-        let strength = v.get("strength").and_then(|s| s.as_f64()).unwrap();
-        assert!(strength >= 0.6, "regenerate strength should be high, got {strength}");
+        // clarity-style params, NOT the generic-img2img "strength"/"guidance_scale" shape.
+        assert!(v.get("strength").is_none(), "regenerate must not use the unverified generic img2img branch");
+        assert_eq!(v.get("scale_factor").and_then(|x| x.as_u64()), Some(2));
+        let creativity = v.get("creativity").and_then(|c| c.as_f64()).unwrap();
+        let resemblance = v.get("resemblance").and_then(|r| r.as_f64()).unwrap();
+        assert!(creativity >= 0.849, "regenerate creativity should be pinned near max, got {creativity}");
+        assert!(resemblance <= 0.401, "regenerate resemblance should be pinned near min, got {resemblance}");
 
-        let faithful = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, false);
-        let faithful_strength = faithful.get("strength").and_then(|s| s.as_f64()).unwrap();
-        assert!(strength > faithful_strength, "regenerate must diverge more than the faithful mode at the same creativity");
+        // Compare against the faithful clarity call (same branch, same JSON shape) at the same
+        // creativity dial — "stability-ai/sdxl" itself only reaches this "resemblance"-shaped
+        // branch at all when regenerate=true; non-regenerate falls to the unrelated generic
+        // img2img "strength"-shaped branch, so it isn't a like-for-like comparison.
+        let faithful = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, false);
+        let faithful_resemblance = faithful.get("resemblance").and_then(|r| r.as_f64()).unwrap();
+        assert!(resemblance < faithful_resemblance, "regenerate must diverge more than the faithful mode at the same creativity");
+    }
+
+    #[test]
+    fn regenerate_mode_still_uses_clarity_params_when_model_is_explicitly_clarity() {
+        let v = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.5, true);
+        assert!(v.get("prompt").and_then(|p| p.as_str()).unwrap().contains("brand-new"));
+        let creativity = v.get("creativity").and_then(|c| c.as_f64()).unwrap();
+        assert!((creativity - 0.85).abs() < 0.001, "regenerate floors creativity at 0.85 regardless of the dial, got {creativity}");
+    }
+
+    #[test]
+    fn regenerate_mode_leaves_esrgan_alone_since_it_never_took_a_prompt() {
+        let v = build_input("nightmareai/real-esrgan", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, true);
+        assert!(v.get("prompt").is_none());
+        assert_eq!(v.get("scale").and_then(|x| x.as_u64()), Some(2));
     }
 
     #[test]

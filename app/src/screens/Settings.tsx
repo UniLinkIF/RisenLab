@@ -314,7 +314,7 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
             />
             {([
               [null, 0.5, false, lang === "uk" ? "Покращити" : "Enhance", lang === "uk" ? "real-esrgan: чесне збільшення роздільності, колір/малюнок не змінюються" : "real-esrgan: honest resolution upscale, color/pattern unchanged"],
-              ["stability-ai/sdxl", 0.85, true, lang === "uk" ? "✨ Нові текстури" : "✨ New textures", lang === "uk" ? "ШІ бере лише силует з оригіналу і МАЛЮЄ текстуру заново — справжня нова картинка, не фільтр" : "AI keeps only the original's silhouette and PAINTS the texture from scratch — a real new image, not a filter"],
+              ["philz1337x/clarity-upscaler", 0.85, true, lang === "uk" ? "✨ Нові текстури" : "✨ New textures", lang === "uk" ? "ШІ бере лише силует з оригіналу і МАЛЮЄ текстуру заново — справжня нова картинка, не фільтр" : "AI keeps only the original's silhouette and PAINTS the texture from scratch — a real new image, not a filter"],
             ] as [string | null, number, boolean, string, string][]).map(([model, creativity, regenerate, label, hint]) => {
               const active = (settings.aiModel ?? null) === model && Boolean(settings.aiRegenerate) === regenerate;
               return (

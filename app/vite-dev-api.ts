@@ -401,6 +401,14 @@ export function risenlabDevApi(): Plugin {
           if (url.pathname === "/api/regenerate" && req.method === "POST") {
             const { outputDir, pngRel, scale } = await readJsonBody(req);
             await runCli(["regenerate", outputDir, pngRel, String(scale ?? 0)]);
+            // Clear any leftover approve/reject decision from a PREVIOUS regenerate — otherwise
+            // this brand-new result stays invisible in the Review screen (which only lists
+            // "pending" items), reading as "regenerate did nothing" when it actually worked.
+            const status = await loadReviewStatus(outputDir);
+            if (pngRel in status) {
+              delete status[pngRel];
+              await saveReviewStatus(outputDir, status);
+            }
             return sendJson(res, 200, { ok: true });
           }
           if (url.pathname === "/api/review-queue" && req.method === "GET") {

@@ -293,8 +293,11 @@ fn actor_skinned_mesh(archive_path: String, entry_path: String) -> Result<risenl
 fn regenerate_texture(state: State<AppState>, png_rel: String, scale: Option<u32>) -> Result<(), String> {
     let out_dir = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
     batch::regenerate(&out_dir, &png_rel, scale.unwrap_or(0), risenlab::batch::RegenEngine::Auto)
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    // Clear any leftover approve/reject decision from a PREVIOUS regenerate (see
+    // logic::reset_review_status doc comment) — otherwise this brand-new result stays invisible
+    // in the Review screen, reading as "regenerate did nothing" when it actually worked fine.
+    logic::reset_review_status(&logic::review_status_path(&out_dir), &png_rel).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]

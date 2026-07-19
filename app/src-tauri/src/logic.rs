@@ -124,6 +124,18 @@ pub fn save_review_status(path: &Path, map: &ReviewStatusMap) -> Result<()> {
     Ok(())
 }
 
+/// Clears a texture's review decision after it's been regenerated. Real owner-reported bug
+/// (2026-07-19): regenerating an already-`approved`/`rejected` texture overwrote its `edited/`
+/// file with brand-new AI content but left the OLD decision sitting in `review_status.json`
+/// untouched — `review_queue_from` only calls something "pending" when it has NO entry, so the
+/// fresh result stayed permanently invisible in the Review screen (which only lists `pending`
+/// items), reading as "regenerate did nothing" when it had actually run fine.
+pub fn reset_review_status(path: &Path, png_rel: &str) -> Result<()> {
+    let mut map = load_review_status(path);
+    map.remove(png_rel);
+    save_review_status(path, &map)
+}
+
 /// Recursively lists every `.png` under `output_dir/edited`, as posix-style paths relative
 /// to `output_dir` (i.e. `png_rel` values, same shape `batch::list_library` uses) — these are
 /// exactly the textures that have a pending AI-regenerated variant to review.
@@ -409,6 +421,32 @@ mod tests {
         map.insert("c/d.png".to_string(), "rejected".to_string());
         save_review_status(&path, &map).unwrap();
         assert_eq!(load_review_status(&path), map);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression test for a real owner-reported bug (2026-07-19): "I regenerated a texture and
+    /// the Review screen shows 0" — the texture HAD regenerated fine, but it was already
+    /// `approved` from an earlier session and nothing ever cleared that decision, so
+    /// `review_queue_from` never called it `pending` again.
+    #[test]
+    fn reset_review_status_clears_only_the_named_entry_back_to_pending() {
+        let dir = temp_dir("reset_review_status");
+        let path = review_status_path(&dir);
+        let mut map = ReviewStatusMap::new();
+        map.insert("wolf/body.png".to_string(), "approved".to_string());
+        map.insert("wolf/head.png".to_string(), "rejected".to_string());
+        save_review_status(&path, &map).unwrap();
+
+        reset_review_status(&path, "wolf/body.png").unwrap();
+
+        let reloaded = load_review_status(&path);
+        assert!(!reloaded.contains_key("wolf/body.png"), "regenerated entry must go back to pending (absent)");
+        assert_eq!(reloaded.get("wolf/head.png"), Some(&"rejected".to_string()), "unrelated entries must be untouched");
+        let queue = review_queue_from(&["wolf/body.png".to_string(), "wolf/head.png".to_string()], &reloaded);
+        assert_eq!(queue, vec![
+            ("wolf/body.png".to_string(), "pending".to_string()),
+            ("wolf/head.png".to_string(), "rejected".to_string()),
+        ]);
         std::fs::remove_dir_all(&dir).ok();
     }
 
