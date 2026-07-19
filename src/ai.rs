@@ -103,35 +103,121 @@ pub fn load_config() -> Option<AiConfig> {
     from_settings
 }
 
+/// Known non-name tokens in this game's real actor/texture filenames — everything a creature
+/// name is never spelled as, so scanning past them finds the real name. Kept intentionally
+/// narrow (exact tokens, not substrings) so a real creature name never accidentally matches one.
+const NAME_SKIP_TOKENS: &[&str] = &[
+    "ani", "hero", "monster", "object", "it", "body", "comp", "composite", "claws", "claw", "eyes", "eye", "head",
+    "diffuse", "normal", "normalmap", "specular", "billboard", "billboards",
+];
+
+/// Best-guess creature/character name pulled straight out of the texture's own real filename
+/// (e.g. "Ani_Monster_Wolf_Body_01_Diffuse_S1.png" → "Wolf", "Ani_Monster_Body_Nautilus_01_
+/// Diffuse_S1.png" → "Nautilus" — the name isn't always right after "Monster"; body-part words
+/// can come first). Told to the AI so it knows *which* creature it's re-texturing instead of a
+/// generic "a fantasy monster" — the owner's "щоб він розумів, що текстура яку він опрацьовує
+/// - це вовк" request. `None` when the filename doesn't look like a real actor/monster texture
+/// (nothing lost — the category-only subject line still applies).
+fn guess_creature_name(png_rel: &str) -> Option<String> {
+    let stem = Path::new(png_rel).file_stem()?.to_str()?.to_string();
+    let tokens: Vec<&str> = stem.split(|c: char| !c.is_alphanumeric()).filter(|t| !t.is_empty()).collect();
+    let lower: Vec<String> = tokens.iter().map(|t| t.to_lowercase()).collect();
+    let monster_pos = lower.iter().position(|t| t == "monster")?;
+    tokens[monster_pos + 1..]
+        .iter()
+        .zip(lower[monster_pos + 1..].iter())
+        .find(|(_, l)| {
+            !NAME_SKIP_TOKENS.contains(&l.as_str())
+                && l.len() > 1
+                && !(l.starts_with('s') && l[1..].chars().all(|c| c.is_ascii_digit()))
+                && !l.chars().all(|c| c.is_ascii_digit())
+        })
+        .map(|(orig, _)| orig.to_string())
+}
+
+/// Category-word guess from the real naming conventions in the game's own library — shared by
+/// both prompt builders below. `None` when nothing matches (each caller supplies its own
+/// fallback text: the faithful and regenerate prompts intentionally use different ones).
+fn texture_category(lower: &str) -> Option<&'static str> {
+    if lower.contains("monster") || lower.contains("wolf") || lower.contains("ogre") {
+        Some("creature skin, fur and hide of a fantasy monster")
+    } else if lower.contains("head") || lower.contains("face") || lower.contains("hero") || lower.contains("npc") {
+        Some("realistic human skin, face and hair")
+    } else if lower.contains("armor") || lower.contains("wpn") || lower.contains("weapon") || lower.contains("sword") || lower.contains("axe") {
+        Some("weathered metal, steel and leather of medieval weapons and armor")
+    } else if lower.contains("nat_") || lower.contains("stone") || lower.contains("rock") || lower.contains("tree") || lower.contains("plant") {
+        Some("natural rock, stone, bark and foliage surfaces")
+    } else if lower.contains("arch") || lower.contains("wall") || lower.contains("house") || lower.contains("building") {
+        Some("medieval architecture: plaster, brick, carved stone and timber")
+    } else if lower.contains("cloth") || lower.contains("cape") || lower.contains("robe") {
+        Some("woven cloth, linen and rough medieval fabric")
+    } else {
+        None
+    }
+}
+
+/// `texture_category`'s match, with the real creature name (`guess_creature_name`) folded in
+/// when this is a monster texture — "щоб він розумів, що текстура яку він опрацьовує - це вовк".
+/// Falls back to `fallback` when no category matched at all.
+fn texture_subject(png_rel: &str, fallback: &str) -> String {
+    let lower = png_rel.to_lowercase();
+    let category = texture_category(&lower).unwrap_or(fallback);
+    match guess_creature_name(png_rel) {
+        Some(name) if lower.contains("monster") => format!("{category} — specifically a {name}-type creature"),
+        _ => category.to_string(),
+    }
+}
+
+/// Shared safety guardrails, appended to BOTH prompts below — the fix for the owner's
+/// "Франкенштейн" report (real screenshots, 2026-07-19): several real diffuse maps are TEXTURE
+/// ATLASES, several unrelated material crops (body/claws/eyes) tiled on a plain/black
+/// background, not one coherent photo. Handed a category word like "creature skin" and no
+/// warning about that layout, the model interpreted the blobby, low-detail crops as an
+/// unfinished portrait and "completed" it: real result was a wall of invented monster HEADS
+/// with eyes/mouths/faces, extra small creatures filling the black background, and — on one
+/// actual eye crop — an unrelated abstract stained-glass pattern instead of a plain eye. None
+/// of that exists in the source; this is the model's own prior for "creature" filling in the
+/// gaps, not a repaint of what's actually there. This explicitly tells it not to. Applies to
+/// every model/branch (`build_input` puts it in the prompt for both faithful and regenerate
+/// modes, and the matching negative-prompt phrases below).
+const ATLAS_AND_REALISM_GUARDRAILS: &str = "\
+This image is source material for a real video-game texture remaster — a UV-mapped surface \
+asset, not concept art, a poster, or a character illustration. It may be a texture ATLAS: \
+several separate, disconnected material crops (e.g. body/claws/eyes) tiled on a plain or black \
+background, each its own independent region, not one coherent photo or scene. If so, repaint \
+each region's own material in place and leave the plain/black background between them empty — \
+never merge separate regions into one connected image, and never add new content to fill the \
+gaps between them. Do not invent a face, eyes, mouth, or head that isn't already present in the \
+source — a blurry limb, patch of hide, or color blob stays exactly that, not a creature \
+portrait. Do not add extra creatures, characters, or figures anywhere in the image.";
+
+const ATLAS_NEGATIVE_TERMS: &str =
+    "invented face, invented eyes, creature portrait, character illustration, bestiary, poster, collage of unrelated creatures, extra heads, extra figures, humanoid silhouette, connected scene across separate regions";
+
 /// Builds the per-texture text prompt for img2img-style models, derived from the texture's
 /// own library name/path (e.g. "compiled/images/Animation/Monster/Ani_Monster_Wolf_Body_01_
 /// Diffuse_S1.png"). Category keywords come from the real naming conventions in the game's
 /// own library. Upscaler models ignore prompts entirely — harmless to compute either way.
 pub fn texture_prompt(png_rel: &str) -> String {
-    let lower = png_rel.to_lowercase();
-    let subject = if lower.contains("monster") || lower.contains("wolf") || lower.contains("ogre") {
-        "creature skin, fur and hide of a fantasy monster"
-    } else if lower.contains("head") || lower.contains("face") || lower.contains("hero") || lower.contains("npc") {
-        "realistic human skin, face and hair"
-    } else if lower.contains("armor") || lower.contains("wpn") || lower.contains("weapon") || lower.contains("sword") || lower.contains("axe") {
-        "weathered metal, steel and leather of medieval weapons and armor"
-    } else if lower.contains("nat_") || lower.contains("stone") || lower.contains("rock") || lower.contains("tree") || lower.contains("plant") {
-        "natural rock, stone, bark and foliage surfaces"
-    } else if lower.contains("arch") || lower.contains("wall") || lower.contains("house") || lower.contains("building") {
-        "medieval architecture: plaster, brick, carved stone and timber"
-    } else if lower.contains("cloth") || lower.contains("cape") || lower.contains("robe") {
-        "woven cloth, linen and rough medieval fabric"
-    } else {
-        "game asset surface material"
-    };
+    let subject = texture_subject(png_rel, "game asset surface material");
     format!(
         "High-resolution remaster of a video game texture: {subject}. \
          Extremely detailed micro-surface: pronounced muscle definition, skin pores, \
          individual fur strands, fabric weave, metal scratches and stone grain where the \
          material calls for it — crisp, never smoothed or plastic-looking. Keep the EXACT \
          same colors, layout, silhouette and UV boundaries as the original image, seamless \
-         where the original is seamless, no new objects, no text, 4k quality."
+         where the original is seamless, no new objects, no text, 4k quality. \
+         {ATLAS_AND_REALISM_GUARDRAILS}"
     )
+}
+
+/// Full-scene concept art (loading screens, menu backgrounds) is genuinely one coherent
+/// illustrated scene, not an atlas of separate material crops — the one real exception to the
+/// atlas guardrails, in both the prompt (`texture_prompt_regenerate`) and the negative prompt
+/// (`build_input`), which is why this is shared between the two.
+fn is_full_scene_texture(png_rel: &str) -> bool {
+    let lower = png_rel.to_lowercase();
+    lower.contains("gui") || lower.contains("loadinghint") || lower.contains("menu") || lower.contains("splash")
 }
 
 /// Builds the "✨ Нові текстури" prompt: unlike `texture_prompt` (which pins the model to the
@@ -142,29 +228,17 @@ pub fn texture_prompt(png_rel: &str) -> String {
 /// report: the old shared prompt was fighting every model into near-identity output regardless
 /// of the creativity dial.
 pub fn texture_prompt_regenerate(png_rel: &str) -> String {
-    let lower = png_rel.to_lowercase();
-    let subject = if lower.contains("monster") || lower.contains("wolf") || lower.contains("ogre") {
-        "creature skin, fur and hide of a fantasy monster"
-    } else if lower.contains("head") || lower.contains("face") || lower.contains("hero") || lower.contains("npc") {
-        "realistic human skin, face and hair"
-    } else if lower.contains("armor") || lower.contains("wpn") || lower.contains("weapon") || lower.contains("sword") || lower.contains("axe") {
-        "weathered metal, steel and leather of medieval weapons and armor"
-    } else if lower.contains("nat_") || lower.contains("stone") || lower.contains("rock") || lower.contains("tree") || lower.contains("plant") {
-        "natural rock, stone, bark and foliage surfaces"
-    } else if lower.contains("arch") || lower.contains("wall") || lower.contains("house") || lower.contains("building") {
-        "medieval architecture: plaster, brick, carved stone and timber"
-    } else if lower.contains("cloth") || lower.contains("cape") || lower.contains("robe") {
-        "woven cloth, linen and rough medieval fabric"
-    } else if lower.contains("gui") || lower.contains("loadinghint") || lower.contains("menu") || lower.contains("splash") {
-        // Full-scene concept-art (loading screens, menu backgrounds) — NOT a tileable material,
-        // a real illustrated scene with real subject matter. A "surface material" description
-        // here (the old generic fallback) told the model this was a flat texture swatch, which
-        // combined with a too-high strength produced a completely unrelated fantasy illustration
-        // instead of a repaint of the actual scene (real incident, 2026-07-19).
-        "dark fantasy concept-art illustration — the same characters, objects and scene composition as the input, painted with dramatically richer detail"
+    let is_full_scene = is_full_scene_texture(png_rel);
+    let subject = if is_full_scene {
+        // A "surface material" description here (the old generic fallback) told the model this
+        // was a flat texture swatch, which combined with a too-high strength produced a
+        // completely unrelated fantasy illustration instead of a repaint of the actual scene
+        // (real incident, 2026-07-19).
+        "dark fantasy concept-art illustration — the same characters, objects and scene composition as the input, painted with dramatically richer detail".to_string()
     } else {
-        "photorealistic game asset material, matching the input's own real subject matter"
+        texture_subject(png_rel, "photorealistic game asset material, matching the input's own real subject matter")
     };
+    let guardrails = if is_full_scene { "" } else { ATLAS_AND_REALISM_GUARDRAILS };
     format!(
         "Completely repaint this video game image as a brand-new, dramatically higher-fidelity \
          {subject}. Do not just sharpen or clean up the input — invent fresh micro-detail, fresh \
@@ -174,7 +248,8 @@ pub fn texture_prompt_regenerate(png_rel: &str) -> String {
          never a different, unrelated scene or character. Only the exact colors and fine surface \
          detail should be freshly generated; the silhouette, pose, layout and subject identity \
          must stay recognizable. Extremely detailed, 4k quality, no text, no watermark, no frame, \
-         no new unrelated objects, no different character."
+         no new unrelated objects, no different character. \
+         {guardrails}"
     )
 }
 
@@ -204,6 +279,9 @@ pub fn is_data_map(png_rel: &str) -> bool {
 /// natural branch below; no model needs special-casing.
 pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32, creativity: f32, regenerate: bool) -> serde_json::Value {
     let creativity = creativity.clamp(0.1, 0.9);
+    // See ATLAS_NEGATIVE_TERMS's doc comment (on ATLAS_AND_REALISM_GUARDRAILS) — skipped for
+    // full-scene concept art (loading screens/menus), which can legitimately contain characters.
+    let negative_suffix = if is_full_scene_texture(png_rel) { String::new() } else { format!(", {ATLAS_NEGATIVE_TERMS}") };
     if model.to_lowercase().contains("clarity") {
         // philz1337x/clarity-upscaler — an upscaler that ADDS detail (tiled SD guided by the
         // prompt) instead of real-esrgan's smoothing. `creativity` is the mode dial: ~0.5
@@ -221,7 +299,7 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
         return serde_json::json!({
             "image": image_data_uri,
             "prompt": prompt,
-            "negative_prompt": "blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark",
+            "negative_prompt": format!("blurry, smooth, plastic, different colors, changed layout, new objects, text, watermark{negative_suffix}"),
             "scale_factor": scale.clamp(2, 4),
             "creativity": effective_creativity,
             "resemblance": resemblance,
@@ -246,7 +324,7 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
         serde_json::json!({
             "image": image_data_uri,
             "prompt": texture_prompt_regenerate(png_rel),
-            "negative_prompt": "blurry, low detail, flat, plain, same as input, watermark, text, frame",
+            "negative_prompt": format!("blurry, low detail, flat, plain, same as input, watermark, text, frame{negative_suffix}"),
             "strength": (0.45 + creativity * 0.3).clamp(0.45, 0.7),
             "guidance_scale": 8.5,
         })
@@ -254,7 +332,7 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
         serde_json::json!({
             "image": image_data_uri,
             "prompt": texture_prompt(png_rel),
-            "negative_prompt": "different colors, changed layout, new objects, text, watermark, frame, blurry",
+            "negative_prompt": format!("different colors, changed layout, new objects, text, watermark, frame, blurry{negative_suffix}"),
             "strength": (creativity * 0.7).clamp(0.15, 0.6),
             "guidance_scale": 6.0,
         })
@@ -622,6 +700,73 @@ mod tests {
         assert!(wolf.contains("creature"), "{wolf}");
         assert!(wolf.contains("silhouette"));
         assert!(wolf.contains("brand-new"));
+    }
+
+    #[test]
+    fn guess_creature_name_handles_the_real_owner_screenshot_filenames() {
+        // Real filenames from the owner's "Франкенштейн" bug report screenshots (2026-07-19).
+        assert_eq!(
+            guess_creature_name("Ani_Hero_Monster_Oger_Body_Diffuse_S1.png").as_deref(),
+            Some("Oger"),
+            "name right after Monster"
+        );
+        assert_eq!(
+            guess_creature_name("Ani_Monster_Body_Nautilus_01_Diffuse_S1.png").as_deref(),
+            Some("Nautilus"),
+            "body-part word before the name — must skip past it and the trailing 01"
+        );
+        assert_eq!(guess_creature_name("Ani_Monster_Stingrat_Body_Diffuse_S1.png").as_deref(), Some("Stingrat"));
+        assert_eq!(guess_creature_name("Ani_Monster_Stingrat_Claws_Diffuse_S1.png").as_deref(), Some("Stingrat"));
+        assert_eq!(
+            guess_creature_name("Ani_Monster_Stingrat_Eyes_Diffuse_S1.png").as_deref(),
+            Some("Stingrat"),
+            "must not mistake the trailing S1 for the name"
+        );
+        assert_eq!(guess_creature_name("Ani_Monster_Wolf_Body_01_Diffuse_S1.png").as_deref(), Some("Wolf"));
+        assert_eq!(guess_creature_name("Ani_Monster_Wolf_Claws_01_Diffuse_S1.png").as_deref(), Some("Wolf"));
+        assert_eq!(guess_creature_name("compiled/images/Special/ItWpn_Axes_01_Diffuse_01.png"), None, "not a monster texture at all");
+    }
+
+    #[test]
+    fn texture_subject_names_the_specific_creature_for_monster_textures() {
+        let wolf = texture_prompt("compiled/images/Animation/Monster/Ani_Monster_Wolf_Body_01_Diffuse_S1.png");
+        assert!(wolf.contains("Wolf-type creature"), "{wolf}");
+        let oger = texture_prompt_regenerate("Ani_Hero_Monster_Oger_Body_Diffuse_S1.png");
+        assert!(oger.contains("Oger-type creature"), "{oger}");
+        // A non-monster texture keeps its category text unchanged (no creature name to fold in).
+        let rock = texture_prompt("compiled/images/Nature/Nat_Stone_Rock_01_Diffuse_03.png");
+        assert!(!rock.contains("-type creature"), "{rock}");
+    }
+
+    #[test]
+    fn atlas_guardrails_forbid_inventing_faces_and_merging_regions() {
+        // The actual "Франкенштейн" fix: real screenshots showed a blobby, faceless body-parts
+        // atlas turned into a wall of invented monster heads/faces/eyes, and a plain eye crop
+        // turned into an unrelated abstract pattern — both prompts must now explicitly forbid
+        // this, and both `build_input` branches that take a prompt must carry it in the
+        // negative_prompt too (see the matching test below).
+        for prompt in [
+            texture_prompt("Ani_Monster_Wolf_Body_01_Diffuse_S1.png"),
+            texture_prompt_regenerate("Ani_Monster_Wolf_Body_01_Diffuse_S1.png"),
+        ] {
+            assert!(prompt.contains("texture ATLAS") || prompt.contains("ATLAS"), "{prompt}");
+            assert!(prompt.to_lowercase().contains("do not invent a face"), "{prompt}");
+            assert!(prompt.to_lowercase().contains("not concept art"), "{prompt}");
+        }
+    }
+
+    #[test]
+    fn atlas_negative_terms_reach_every_prompted_build_input_branch_except_full_scene() {
+        for (model, regenerate) in [("philz1337x/clarity-upscaler", false), ("philz1337x/clarity-upscaler", true), ("stability-ai/sdxl", false), ("stability-ai/sdxl", true)] {
+            let v = build_input(model, "data:image/png;base64,x", "Ani_Monster_Wolf_Body_01_Diffuse_S1.png", 2, 0.6, regenerate);
+            let neg = v.get("negative_prompt").and_then(|p| p.as_str()).unwrap();
+            assert!(neg.contains("invented face"), "model={model} regenerate={regenerate}: {neg}");
+        }
+        // Full-scene concept art (splash/menu/GUI) is the deliberate exception — a real
+        // illustrated scene legitimately has characters/faces in it.
+        let splash = build_input("stability-ai/sdxl", "data:image/png;base64,x", "GUI_LoadingHint_04.png", 2, 0.6, true);
+        let neg = splash.get("negative_prompt").and_then(|p| p.as_str()).unwrap();
+        assert!(!neg.contains("invented face"), "{neg}");
     }
 
     #[test]
