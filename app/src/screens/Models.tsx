@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
-import type { LibraryEntry, MeshEntry } from "../lib/types";
-import { listLibrary, listMeshes, meshObjUrl, meshTextureRefs, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
+import type { LibraryEntry, MeshEntry, ReviewStatus } from "../lib/types";
+import { listLibrary, listMeshes, meshObjUrl, meshTextureRefs, readEditedDataUrl, readTextureDataUrl, regenerateTexture, reviewQueue } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import FolderTree from "../components/FolderTree";
@@ -55,6 +55,11 @@ export default function Models({ lang, onRegenerated, onQueueChanged }: Props) {
   // then suspended so the explicit choice actually shows on the whole mesh instead of being
   // overridden per submesh. Reset whenever a new mesh's auto-match runs.
   const [manualTexture, setManualTexture] = useState(false);
+  // Which textures have EVER been through AI enhancement (any status), from disk — not session
+  // state. Owner: "мене бісить що я не можу переглядати згенеровані моделі після погодження" —
+  // `showingGenerated`/the toast below only knew about a texture generated THIS session, so
+  // reselecting a mesh (or reopening the app) lost all way back into its before/after compare.
+  const [statusByPngRel, setStatusByPngRel] = useState<Map<string, ReviewStatus>>(new Map());
 
   useEffect(() => {
     listMeshes()
@@ -62,6 +67,9 @@ export default function Models({ lang, onRegenerated, onQueueChanged }: Props) {
       .catch((e) => setError(String(e)));
     listLibrary()
       .then(setTextures)
+      .catch(() => {});
+    reviewQueue()
+      .then((items) => setStatusByPngRel(new Map(items.map((i) => [i.pngRel, i.status]))))
       .catch(() => {});
   }, []);
 
@@ -178,6 +186,7 @@ export default function Models({ lang, onRegenerated, onQueueChanged }: Props) {
       // jump — with the model context, so the review's 3D mode still works when taken.
       onQueueChanged();
       setShowingGenerated(true);
+      setStatusByPngRel((prev) => new Map(prev).set(diffuseEntry.pngRel, "pending"));
       setGenNotice(diffuseEntry);
     } catch (e) {
       setError(String(e));
@@ -360,28 +369,50 @@ export default function Models({ lang, onRegenerated, onQueueChanged }: Props) {
           {generating ? (lang === "uk" ? "Генерація…" : "Generating…") : lang === "uk" ? "✨ Згенерувати нову текстуру" : "✨ Generate new texture"}
         </button>
 
-        {diffuseEntry && showingGenerated ? (
-          <button
-            onClick={() => setShowingGenerated((v) => !v)}
-            style={{
-              width: "100%",
-              padding: 9,
-              borderRadius: 9,
-              background: "var(--bg2)",
-              border: "1px solid var(--border)",
-              font: "600 12px system-ui",
-              color: "var(--text)",
-              marginTop: 8,
-            }}
-          >
-            {showingGenerated
-              ? lang === "uk"
-                ? "Показати оригінал"
-                : "Show original"
-              : lang === "uk"
-                ? "Показати згенеровану"
-                : "Show generated"}
-          </button>
+        {diffuseEntry && statusByPngRel.get(diffuseEntry.pngRel) && statusByPngRel.get(diffuseEntry.pngRel) !== "rejected" ? (
+          <>
+            <button
+              onClick={() => setShowingGenerated((v) => !v)}
+              style={{
+                width: "100%",
+                padding: 9,
+                borderRadius: 9,
+                background: "var(--bg2)",
+                border: "1px solid var(--border)",
+                font: "600 12px system-ui",
+                color: "var(--text)",
+                marginTop: 8,
+              }}
+            >
+              {showingGenerated
+                ? lang === "uk"
+                  ? "Показати оригінал"
+                  : "Show original"
+                : lang === "uk"
+                  ? "Показати згенеровану"
+                  : "Show generated"}
+            </button>
+            <button
+              onClick={() => onRegenerated(diffuseEntry, objUrl)}
+              title={
+                lang === "uk"
+                  ? "Відкрити повний екран порівняння до/після (2 об'єкти, синхронна камера)"
+                  : "Open the full before/after compare screen (2 objects, synced camera)"
+              }
+              style={{
+                width: "100%",
+                padding: 9,
+                borderRadius: 9,
+                background: "var(--bg2)",
+                border: "1px solid var(--accent)",
+                font: "600 12px system-ui",
+                color: "var(--accent)",
+                marginTop: 6,
+              }}
+            >
+              {lang === "uk" ? "👁 Переглянути до/після" : "👁 View before/after"}
+            </button>
+          </>
         ) : null}
       </div>
       {genNotice ? (

@@ -236,7 +236,14 @@ export default function Library({ lang, onRegenerated, onQueueChanged, onOpenRev
         ) : null}
       </div>
 
-      <DetailPanel entry={selected} lang={lang} onRegenerate={handleRegenerate} regenerating={regenerating} />
+      <DetailPanel
+        entry={selected}
+        lang={lang}
+        onRegenerate={handleRegenerate}
+        regenerating={regenerating}
+        reviewStatus={selected ? statusByPngRel.get(selected.pngRel) : undefined}
+        onViewCompare={onRegenerated}
+      />
 
       {genNotice ? (
         <div

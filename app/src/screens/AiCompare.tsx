@@ -76,11 +76,27 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
     // (the old `!== "rejected"` filter) meant "Прийняти" visibly did nothing, because the
     // just-approved item stayed as the current one.
     const pending = items.filter((i) => i.status === "pending");
-    setQueue(pending);
     if (preferPngRel) {
       const i = pending.findIndex((it) => it.pngRel === preferPngRel);
-      if (i >= 0) setIndex(i);
+      if (i >= 0) {
+        setQueue(pending);
+        setIndex(i);
+        return pending;
+      }
+      // Not (or no longer) pending — the owner wants to reopen an already-decided item's
+      // before/after view directly (from Library/Models "👁 Переглянути до/після"), not browse
+      // the live review queue. Pin a single-item queue for it instead of falling through to
+      // "no selection": its `edited/` variant is still on disk for any status except
+      // "rejected" (rejecting deletes it server-side — see `act()`), so there's nothing left to
+      // compare there.
+      const pinned = items.find((it) => it.pngRel === preferPngRel && it.status !== "rejected");
+      if (pinned) {
+        setQueue([pinned]);
+        setIndex(0);
+        return [pinned];
+      }
     }
+    setQueue(pending);
     return pending;
   }
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
-import type { LibraryEntry, TextureMeta } from "../lib/types";
+import type { LibraryEntry, ReviewStatus, TextureMeta } from "../lib/types";
 import { readTextureDataUrl, textureMeta } from "../lib/api";
 import { formatBytes } from "../lib/library";
 
@@ -10,9 +10,18 @@ interface Props {
   lang: Lang;
   onRegenerate: (entry: LibraryEntry) => void;
   regenerating: boolean;
+  /** Set when this entry has ever been through AI enhancement (any status) — drives the
+   * "Переглянути до/після" button below. `undefined`/absent = never touched. */
+  reviewStatus?: ReviewStatus;
+  /** Reopens the before/after compare screen for an entry that's already been decided
+   * (approved, or still pending) — the owner's fix for "I can't look at a texture's before/
+   * after again once I've left the review queue". Not offered for "rejected": the `edited/`
+   * variant is deleted server-side the moment a texture is rejected, so there's nothing left
+   * to show. */
+  onViewCompare: (entry: LibraryEntry) => void;
 }
 
-export default function DetailPanel({ entry, lang, onRegenerate, regenerating }: Props) {
+export default function DetailPanel({ entry, lang, onRegenerate, regenerating, reviewStatus, onViewCompare }: Props) {
   const s = t(lang);
   const [preview, setPreview] = useState<string | null>(null);
   const [meta, setMeta] = useState<TextureMeta | null>(null);
@@ -126,6 +135,23 @@ export default function DetailPanel({ entry, lang, onRegenerate, regenerating }:
               {regenerating ? s.loading : s.btnRegenerate}
             </button>
           </div>
+          {reviewStatus && reviewStatus !== "rejected" ? (
+            <button
+              onClick={() => onViewCompare(entry)}
+              style={{
+                width: "100%",
+                marginTop: 8,
+                padding: 10,
+                borderRadius: 9,
+                background: "var(--bg2)",
+                border: "1px solid var(--accent)",
+                font: "600 12.5px system-ui",
+                color: "var(--accent)",
+              }}
+            >
+              {lang === "uk" ? "👁 Переглянути до/після" : "👁 View before/after"}
+            </button>
+          ) : null}
         </>
       ) : null}
     </div>
