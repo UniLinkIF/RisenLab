@@ -7,7 +7,6 @@ import { computeFraming } from "../lib/framing";
 import { deriveNormalName, deriveSpecularName } from "../lib/materials";
 import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
 import { specularLuminanceToRoughness } from "../lib/roughness";
-import type { CameraSyncRef } from "../lib/cameraSync";
 
 /** Genome's normal maps are DXT5-compressed with the X/Y components swizzled into the green
  * and alpha channels (see lib/normalMap.ts) — three.js has no idea about this and reads R/G/B
@@ -64,10 +63,6 @@ interface Props {
    * confirmed against Rimy3D, which reads the full .mtl). Null/absent = single-material
    * behavior (also used to honor an explicit user texture override). */
   resolveTexture?: ((baseName: string) => Promise<string | null>) | null;
-  /** Shared with a sibling viewer (owner request, 2026-07-19): rotating/zooming this camera
-   * mirrors onto the other panel and vice versa — see lib/cameraSync.ts for why this is a plain
-   * ref rather than React state. Absent/null = no sync, normal independent orbit. */
-  cameraSync?: CameraSyncRef | null;
 }
 
 /** Frames the camera so the whole model fits the view, regardless of its native scale
@@ -89,7 +84,7 @@ function frameObject(object: THREE.Object3D, camera: THREE.PerspectiveCamera, co
   controls.update();
 }
 
-export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, resolveTexture, cameraSync }: Props) {
+export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, resolveTexture }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -316,25 +311,6 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
       needsRender = true;
     }
     controls.addEventListener("change", requestRender);
-
-    // Camera sync with a sibling side-by-side viewer (see lib/cameraSync.ts). `applyingSync`
-    // guards against an echo: `controls.update()` below (called after we set the camera/target
-    // programmatically) fires its own "change" event, which would otherwise immediately write
-    // this exact same state right back to the ref.
-    let applyingSync = false;
-    let lastAppliedSyncRev = -1;
-    if (cameraSync) {
-      controls.addEventListener("change", () => {
-        if (applyingSync) return;
-        const rev = performance.now();
-        lastAppliedSyncRev = rev;
-        cameraSync.current = {
-          rev,
-          position: [camera.position.x, camera.position.y, camera.position.z],
-          target: [controls.target.x, controls.target.y, controls.target.z],
-        };
-      });
-    }
     // A render request that lands while the tab/window is backgrounded, occluded, or hasn't
     // finished gaining focus yet can be silently dropped (the browser throttles/skips paints
     // for hidden or not-yet-visible content) — the flag gets set, but no frame ever consumes
@@ -381,16 +357,6 @@ export default function Model3DViewer({ objUrl, diffuseUrl, normalUrl, mode, res
     let frame = 0;
     function animate() {
       frame = requestAnimationFrame(animate);
-      const syncing = !!(cameraSync?.current && cameraSync.current.rev > lastAppliedSyncRev);
-      if (syncing && cameraSync?.current) {
-        lastAppliedSyncRev = cameraSync.current.rev;
-        applyingSync = true;
-        camera.position.set(...cameraSync.current.position);
-        controls.target.set(...cameraSync.current.target);
-        controls.update();
-        applyingSync = false;
-        needsRender = true;
-      }
       if (!needsRender) return;
       needsRender = false;
       renderer.render(scene, camera);

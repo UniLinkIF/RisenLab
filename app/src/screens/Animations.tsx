@@ -1,7 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import type { Lang } from "../lib/i18n";
 import type { ActorEntry, BoneMotion, LibraryEntry, MotionEntry, SkeletonNode, SkinnedMeshData } from "../lib/types";
-import type { CameraSyncState } from "../lib/cameraSync";
 import { actorObjUrl, actorSkeleton, actorSkinnedMesh, actorTextureRefs, exportDoubleRateMotionPatch, exportMotionPatch, exportMotionPatchBatch, listActors, listLibrary, listMotions, motionTracks, readEditedDataUrl, readTextureDataUrl, regenerateTexture } from "../lib/api";
 import { buildFolderTree, filterByTreeKey, filterEntries, findTextureByBaseName } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
@@ -138,14 +137,6 @@ export default function Animations({ lang }: Props) {
   // the motion `sideBySide` below, which compares POSES not textures). Mutually exclusive with
   // motion side-by-side so the viewer never has to render a 4-way split.
   const [textureSideBySide, setTextureSideBySide] = useState(false);
-  // Shared camera for whichever 2-panel comparison is active (owner request, 2026-07-19:
-  // orbiting/zooming one panel should move the other identically) — a plain ref, not React
-  // state, see lib/cameraSync.ts. Reset on actor change so a leftover framing sized for a
-  // different model's bounding box never gets applied to a freshly mounted pair.
-  const cameraSyncRef = useRef<CameraSyncState | null>(null);
-  useEffect(() => {
-    cameraSyncRef.current = null;
-  }, [selectedActor?.entryPath]);
   const [motionTracksData, setMotionTracksData] = useState<BoneMotion[] | null>(null);
   const [tracksLoading, setTracksLoading] = useState(false);
   // Jitter-cleanup preview strength (0 = original clip; the filtering itself runs in Rust —
@@ -581,7 +572,6 @@ export default function Animations({ lang }: Props) {
                         diffuseUrl={diffuseUrl}
                         normalUrl={normalUrl}
                         resolveTexture={resolver}
-                        cameraSync={cameraSyncRef}
                       />
                       <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
                         {label}
@@ -596,7 +586,6 @@ export default function Animations({ lang }: Props) {
                         normalUrl={normalUrl}
                         mode={mode}
                         resolveTexture={resolver}
-                        cameraSync={cameraSyncRef}
                       />
                       <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
                         {label}
@@ -625,7 +614,6 @@ export default function Animations({ lang }: Props) {
                       diffuseUrl={diffuseUrl}
                       normalUrl={normalUrl}
                       resolveTexture={resolveTexture}
-                      cameraSync={cameraSyncRef}
                     />
                     <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: i === 1 ? "#fff" : "var(--text-dim)", background: i === 1 ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none", borderColor: color }}>
                       {label}
