@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { queueCount, t } from "../lib/i18n";
 import type { LibraryEntry, ReviewItem } from "../lib/types";
+import type { CameraSyncState } from "../lib/cameraSync";
 import { listLibrary, readEditedDataUrl, readTextureDataUrl, regenerateTexture, reviewQueue, setReviewStatus } from "../lib/api";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import Model3DViewer from "../components/Model3DViewer";
@@ -93,6 +94,15 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   }, []);
 
   const current = queue[index] ?? null;
+
+  // Shared camera for the 3D mode's original/variant pair (owner request: orbiting/zooming one
+  // panel should move the other identically — see lib/cameraSync.ts). Reset whenever the
+  // reviewed texture changes so a leftover framing from a differently-shaped mesh never carries
+  // over onto a freshly mounted pair.
+  const cameraSyncRef = useRef<CameraSyncState | null>(null);
+  useEffect(() => {
+    cameraSyncRef.current = null;
+  }, [current?.pngRel]);
 
   // 3D mode: two viewers of the SAME mesh where only the reviewed texture differs — every
   // other material resolves normally, so multi-material models stay correct.
@@ -208,6 +218,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
                 normalUrl={null}
                 mode="textured"
                 resolveTexture={resolver}
+                cameraSync={cameraSyncRef}
               />
               <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: isVariant ? "#fff" : "var(--text-dim)", background: isVariant ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
                 {label}
