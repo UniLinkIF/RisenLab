@@ -32,6 +32,9 @@ function defaultSettings() {
     aiApiKey: null as string | null,
     aiModel: null as string | null,
     aiCreativity: null as number | null,
+    // "✨ Нові текстури" mode: true = the AI fully repaints the texture instead of faithfully
+    // re-detailing it (see src/ai.rs's `texture_prompt_regenerate`/`build_input`).
+    aiRegenerate: null as boolean | null,
   };
 }
 const SETTINGS_PATH = path.join(PROJECT_ROOT, "settings.json");

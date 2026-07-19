@@ -313,16 +313,14 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
             />
             {([
-              [null, 0.5, lang === "uk" ? "Точний" : "Faithful", lang === "uk" ? "real-esrgan: тільки збільшення, нічого не вигадує" : "real-esrgan: pure upscale, invents nothing"],
-              ["philz1337x/clarity-upscaler", 0.5, lang === "uk" ? "Деталізований" : "Detailed", lang === "uk" ? "Відновлює пори/м'язи/зерно, тримаючись оригіналу" : "Restores pores/muscle/grain, staying close to the original"],
-              ["philz1337x/clarity-upscaler", 0.78, lang === "uk" ? "🔥 Ремастер" : "🔥 Remaster", lang === "uk" ? "Помітно ПЕРЕМАЛЬОВУЄ узори і деталі — справжній ремастер-вигляд; все проходить твоє рев'ю" : "Visibly RE-IMAGINES patterns/detail — real remaster look; still gated by your review"],
-              ["stability-ai/sdxl", 0.6, lang === "uk" ? "Художній" : "Artistic", lang === "uk" ? "SDXL img2img — найвільніший, найбільший ризик відхилень" : "SDXL img2img — freest, highest drift risk"],
-            ] as [string | null, number, string, string][]).map(([model, creativity, label, hint]) => {
-              const active = (settings.aiModel ?? null) === model && Math.abs((settings.aiCreativity ?? 0.6) - creativity) < 0.05;
+              [null, 0.5, false, lang === "uk" ? "Покращити" : "Enhance", lang === "uk" ? "real-esrgan: чесне збільшення роздільності, колір/малюнок не змінюються" : "real-esrgan: honest resolution upscale, color/pattern unchanged"],
+              ["stability-ai/sdxl", 0.85, true, lang === "uk" ? "✨ Нові текстури" : "✨ New textures", lang === "uk" ? "ШІ бере лише силует з оригіналу і МАЛЮЄ текстуру заново — справжня нова картинка, не фільтр" : "AI keeps only the original's silhouette and PAINTS the texture from scratch — a real new image, not a filter"],
+            ] as [string | null, number, boolean, string, string][]).map(([model, creativity, regenerate, label, hint]) => {
+              const active = (settings.aiModel ?? null) === model && Boolean(settings.aiRegenerate) === regenerate;
               return (
                 <button
                   key={label}
-                  onClick={() => persist({ ...settings, aiModel: model, aiCreativity: creativity })}
+                  onClick={() => persist({ ...settings, aiModel: model, aiCreativity: creativity, aiRegenerate: regenerate })}
                   title={hint}
                   style={{ padding: "8px 12px", borderRadius: 8, background: active ? "var(--accent)" : "var(--bg2)", border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: active ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
                 >

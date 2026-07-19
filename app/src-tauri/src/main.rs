@@ -436,6 +436,60 @@ fn export_motion_patch_batch(
         .map_err(|e| e.to_string())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppStatsDto {
+    texture_total: usize,
+    texture_processed: usize,
+    archive_count: Option<usize>,
+    game_archive_total_bytes: Option<u64>,
+    output_dir_size_bytes: u64,
+    models_available: usize,
+    app_version: String,
+}
+
+/// Mirrors the dev-bridge's `/api/stats` (see `vite-dev-api.ts`) so the packaged app's
+/// Dashboard actually has real numbers instead of the hard "not implemented" throw it shipped
+/// with (owner-reported: "Якщо запускати exe - дашборд не працює").
+#[tauri::command]
+fn get_stats(state: State<AppState>) -> AppStatsDto {
+    let (game_exe, out_dir) = {
+        let s = state.settings.lock().unwrap();
+        (s.game_exe.clone(), PathBuf::from(s.output_dir.clone()))
+    };
+
+    let texture_total = batch::list_library(&out_dir).map(|v| v.len()).unwrap_or(0);
+    let status = logic::load_review_status(&logic::review_status_path(&out_dir));
+    let texture_processed = status.len();
+
+    let (archive_count, game_archive_total_bytes) = match &game_exe {
+        Some(exe) => match logic::discover_game(&PathBuf::from(exe)) {
+            Ok(discovery) => {
+                let paths: Vec<PathBuf> = discovery.archives.iter().map(|a| a.path.clone()).collect();
+                (Some(discovery.archives.len()), Some(logic::sum_file_sizes(&paths)))
+            }
+            Err(_) => (None, None),
+        },
+        None => (None, None),
+    };
+
+    let models_available = game_exe
+        .as_ref()
+        .and_then(|exe| batch::list_meshes(&PathBuf::from(exe)).ok())
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+    AppStatsDto {
+        texture_total,
+        texture_processed,
+        archive_count,
+        game_archive_total_bytes,
+        output_dir_size_bytes: logic::dir_size_bytes(&out_dir),
+        models_available,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -479,6 +533,7 @@ fn main() {
             export_motion_patch,
             export_motion_patch_batch,
             export_double_rate_motion_patch,
+            get_stats,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RisenLab UI");

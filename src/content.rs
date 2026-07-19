@@ -7,6 +7,26 @@ use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 
+/// Stops a spawned child process (`curl.exe`, `mimicry-helper.exe`) from popping up its own
+/// console window for the second or so it runs. The packaged app (`risenlab-ui.exe`) is a
+/// windowless GUI process, so by Windows' default console-inheritance rules, any child that
+/// itself expects a console gets a BRAND NEW one allocated and briefly shown — a real,
+/// owner-reported bug ("на кожному ревю вибиває на весь екран ніби консоль на секунду"),
+/// triggered on every AI regenerate (each is 1-3 curl.exe calls: create/poll/download).
+/// `CREATE_NO_WINDOW` (0x08000000) tells `CreateProcess` not to allocate one at all.
+pub fn suppress_console_window(cmd: &mut Command) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = cmd;
+    }
+}
+
 /// Locates `mimicry-helper.exe`. Checked in order: `RISENLAB_MIMICRY_HELPER` env var, next to
 /// this binary's own directory (the packaged-install case — ship `mimicry-helper.exe` alongside
 /// `risenlab-ui.exe`/`risenlab.exe`), then next to this repo (`../mimicry-helper`, dev layout).
@@ -48,10 +68,10 @@ fn run_helper(args: &[&str]) -> Result<()> {
     // after mimicry-helper.exe was rebuilt with the `actor-to-obj` addition). Capture the
     // child's stdout separately instead of inheriting it, so only this process's own,
     // intentional output ever reaches its real stdout.
-    let output = Command::new(&exe)
-        .args(args)
-        .output()
-        .with_context(|| format!("running {}", exe.display()))?;
+    let mut cmd = Command::new(&exe);
+    cmd.args(args);
+    suppress_console_window(&mut cmd);
+    let output = cmd.output().with_context(|| format!("running {}", exe.display()))?;
     if !output.status.success() {
         // stderr is captured now instead of inherited (see above), so it must be threaded into
         // the error message explicitly or a real mimicry-helper failure reason is lost.

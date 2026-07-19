@@ -312,6 +312,6 @@ export async function backupProject(): Promise<string> {
 }
 
 export async function getStats(): Promise<AppStats> {
-  if (isTauri()) throw new Error("Stats are not implemented in the Tauri backend yet");
+  if (isTauri()) return invoke<AppStats>("get_stats");
   return api<AppStats>("stats");
 }

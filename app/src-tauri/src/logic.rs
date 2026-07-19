@@ -233,6 +233,25 @@ pub fn sum_file_sizes(paths: &[PathBuf]) -> u64 {
         .sum()
 }
 
+/// Total size in bytes of every file under `dir`, recursively. Missing `dir` (nothing
+/// extracted/generated yet) is `0`, not an error — mirrors the dev-bridge's `dirSizeBytes`,
+/// used by the Dashboard's "Textures" disk-usage tile.
+pub fn dir_size_bytes(dir: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            total += dir_size_bytes(&path);
+        } else if let Ok(meta) = entry.metadata() {
+            total += meta.len();
+        }
+    }
+    total
+}
+
 // ---------------------------------------------------------------------------------------
 // Texture metadata (detail panel)
 // ---------------------------------------------------------------------------------------
@@ -491,6 +510,17 @@ mod tests {
         std::fs::write(&a, [0u8; 10]).unwrap();
         let missing = dir.join("nope.bin");
         assert_eq!(sum_file_sizes(&[a, missing]), 10);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dir_size_bytes_sums_nested_files_and_ignores_missing_dir() {
+        let dir = temp_dir("dir_size");
+        std::fs::create_dir_all(dir.join("edited/Level")).unwrap();
+        std::fs::write(dir.join("a.png"), [0u8; 5]).unwrap();
+        std::fs::write(dir.join("edited/Level/b.png"), [0u8; 7]).unwrap();
+        assert_eq!(dir_size_bytes(&dir), 12);
+        assert_eq!(dir_size_bytes(&dir.join("nope")), 0);
         std::fs::remove_dir_all(&dir).ok();
     }
 

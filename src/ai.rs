@@ -42,6 +42,11 @@ pub struct AiConfig {
     /// creativity / SDXL's denoising strength. The UI's modes are presets over this —
     /// «Деталізований» ≈ 0.5, «Ремастер» ≈ 0.75.
     pub creativity: f32,
+    /// "✨ Нові текстури" mode (settings `aiRegenerate`): true asks the img2img model to
+    /// genuinely repaint the texture from the source's rough structure — a fresh piece of art
+    /// for the same subject — instead of faithfully re-detailing what's already there. See
+    /// `texture_prompt_regenerate` / `build_input`. Ignored by upscalers (no prompt involved).
+    pub regenerate: bool,
 }
 
 /// The app's settings file — the same one `vite-dev-api.ts` (dev) and the Tauri backend
@@ -77,7 +82,8 @@ pub fn parse_settings_ai(json: &str) -> Option<AiConfig> {
         .and_then(|c| c.as_f64())
         .map(|c| (c as f32).clamp(0.1, 0.9))
         .unwrap_or(0.6);
-    Some(AiConfig { provider, api_key: key, model, creativity })
+    let regenerate = value.get("aiRegenerate").and_then(|r| r.as_bool()).unwrap_or(false);
+    Some(AiConfig { provider, api_key: key, model, creativity, regenerate })
 }
 
 /// Reads AI config: `RISENLAB_AI_KEY` env var wins (model from settings or default), then the
@@ -88,10 +94,10 @@ pub fn load_config() -> Option<AiConfig> {
     if let Ok(env_key) = std::env::var("RISENLAB_AI_KEY") {
         let env_key = env_key.trim().to_string();
         if !env_key.is_empty() {
-            let (provider, model, creativity) = from_settings
-                .map(|c| (c.provider, c.model, c.creativity))
-                .unwrap_or_else(|| ("replicate".to_string(), DEFAULT_MODEL.to_string(), 0.6));
-            return Some(AiConfig { provider, api_key: env_key, model, creativity });
+            let (provider, model, creativity, regenerate) = from_settings
+                .map(|c| (c.provider, c.model, c.creativity, c.regenerate))
+                .unwrap_or_else(|| ("replicate".to_string(), DEFAULT_MODEL.to_string(), 0.6, false));
+            return Some(AiConfig { provider, api_key: env_key, model, creativity, regenerate });
         }
     }
     from_settings
@@ -128,6 +134,42 @@ pub fn texture_prompt(png_rel: &str) -> String {
     )
 }
 
+/// Builds the "✨ Нові текстури" prompt: unlike `texture_prompt` (which pins the model to the
+/// EXACT original colors/layout — the right call for a faithful re-detail), this one explicitly
+/// tells the model to repaint the texture as fresh art. Only the rough silhouette needs to
+/// survive (so the result still roughly fits the same UVs) — everything else, colors included,
+/// is meant to change. This is the fix for the owner's "88 textures, 0 visible difference"
+/// report: the old shared prompt was fighting every model into near-identity output regardless
+/// of the creativity dial.
+pub fn texture_prompt_regenerate(png_rel: &str) -> String {
+    let lower = png_rel.to_lowercase();
+    let subject = if lower.contains("monster") || lower.contains("wolf") || lower.contains("ogre") {
+        "creature skin, fur and hide of a fantasy monster"
+    } else if lower.contains("head") || lower.contains("face") || lower.contains("hero") || lower.contains("npc") {
+        "realistic human skin, face and hair"
+    } else if lower.contains("armor") || lower.contains("wpn") || lower.contains("weapon") || lower.contains("sword") || lower.contains("axe") {
+        "weathered metal, steel and leather of medieval weapons and armor"
+    } else if lower.contains("nat_") || lower.contains("stone") || lower.contains("rock") || lower.contains("tree") || lower.contains("plant") {
+        "natural rock, stone, bark and foliage surfaces"
+    } else if lower.contains("arch") || lower.contains("wall") || lower.contains("house") || lower.contains("building") {
+        "medieval architecture: plaster, brick, carved stone and timber"
+    } else if lower.contains("cloth") || lower.contains("cape") || lower.contains("robe") {
+        "woven cloth, linen and rough medieval fabric"
+    } else {
+        "game asset surface material"
+    };
+    format!(
+        "Completely repaint this video game texture as a brand-new, dramatically higher-fidelity \
+         {subject}. Do not just sharpen or clean up the input — invent fresh micro-detail, fresh \
+         material variation, fresh color depth, fresh wear and grime: a genuinely new piece of \
+         concept-art-quality texture art for the same subject, not a filter over the original. \
+         Only the rough silhouette and overall shape may stay recognizable so it still roughly \
+         fits the same UV layout — everything else (exact colors, fine patterns, surface detail) \
+         should be freshly generated. Extremely detailed, 4k quality, no text, no watermark, no \
+         frame, no new unrelated objects."
+    )
+}
+
 /// Whether a texture is a data map (normal/specular) rather than a photo-like image. AI image
 /// models are trained on photos and will destroy the encoded vectors — these must always take
 /// the local (Lanczos) path regardless of configuration.
@@ -140,7 +182,7 @@ pub fn is_data_map(png_rel: &str) -> bool {
 /// real-esrgan) take `image` + `scale`; anything else is treated as an img2img refiner and
 /// additionally gets the category prompt with a conservative denoising strength (the texture
 /// must stay recognizably itself).
-pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32, creativity: f32) -> serde_json::Value {
+pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32, creativity: f32, regenerate: bool) -> serde_json::Value {
     let creativity = creativity.clamp(0.1, 0.9);
     if model.to_lowercase().contains("clarity") {
         // philz1337x/clarity-upscaler — an upscaler that ADDS detail (tiled SD guided by the
@@ -159,10 +201,23 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
         });
     }
     if model.to_lowercase().contains("esrgan") {
-        serde_json::json!({
+        return serde_json::json!({
             "image": image_data_uri,
             "scale": scale.clamp(2, 4),
             "face_enhance": false,
+        });
+    }
+    if regenerate {
+        // "✨ Нові текстури": genuinely repaint, not re-detail. Strength this high mostly
+        // ignores the input's own colors/fine content (SDXL img2img denoising strength close to
+        // 1.0 == near txt2img) — only the coarse structure the early denoising steps see comes
+        // through, which is exactly "keep the silhouette, invent everything else".
+        serde_json::json!({
+            "image": image_data_uri,
+            "prompt": texture_prompt_regenerate(png_rel),
+            "negative_prompt": "blurry, low detail, flat, plain, same as input, watermark, text, frame",
+            "strength": (0.55 + creativity * 0.4).clamp(0.6, 0.95),
+            "guidance_scale": 8.5,
         })
     } else {
         serde_json::json!({
@@ -182,11 +237,10 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
 /// a temp file (`--data @file`): a base64 texture is megabytes — far past the Windows
 /// command-line length limit.
 fn curl(args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("curl.exe")
-        .args(["-sS", "--max-time", "180"])
-        .args(args)
-        .output()
-        .context("running curl.exe (bundled with Windows 10+)")?;
+    let mut cmd = Command::new("curl.exe");
+    cmd.args(["-sS", "--max-time", "180"]).args(args);
+    crate::content::suppress_console_window(&mut cmd);
+    let out = cmd.output().context("running curl.exe (bundled with Windows 10+)")?;
     if !out.status.success() {
         bail!("curl failed: {}", String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -275,7 +329,7 @@ fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u
     let data_uri = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
 
     // Request body → temp file (megabytes of base64 blow past the command-line length limit).
-    let body = serde_json::json!({ "input": build_input(&cfg.model, &data_uri, png_rel, scale, cfg.creativity) });
+    let body = serde_json::json!({ "input": build_input(&cfg.model, &data_uri, png_rel, scale, cfg.creativity, cfg.regenerate) });
     let body_path = std::env::temp_dir().join(format!("risenlab_ai_{}.json", std::process::id()));
     std::fs::write(&body_path, serde_json::to_vec(&body)?).context("writing request body temp file")?;
     let body_arg = format!("@{}", body_path.display());
@@ -396,7 +450,7 @@ mod tests {
 
     #[test]
     fn clarity_input_carries_prompt_and_faithfulness_knobs() {
-        let v = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,x", "Monster_Ogre_Body_Diffuse.png", 2, 0.75);
+        let v = build_input("philz1337x/clarity-upscaler", "data:image/png;base64,x", "Monster_Ogre_Body_Diffuse.png", 2, 0.75, false);
         assert!(v.get("prompt").and_then(|p| p.as_str()).unwrap().contains("muscle"));
         assert_eq!(v.get("scale_factor").and_then(|x| x.as_u64()), Some(2));
         assert!(v.get("resemblance").is_some() && v.get("creativity").is_some());
@@ -404,11 +458,33 @@ mod tests {
 
     #[test]
     fn esrgan_input_has_no_prompt_but_img2img_does() {
-        let esrgan = build_input("nightmareai/real-esrgan", "data:image/png;base64,xxx", "a_Diffuse.png", 2, 0.5);
+        let esrgan = build_input("nightmareai/real-esrgan", "data:image/png;base64,xxx", "a_Diffuse.png", 2, 0.5, false);
         assert!(esrgan.get("prompt").is_none());
         assert_eq!(esrgan.get("scale").and_then(|v| v.as_u64()), Some(2));
-        let sdxl = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.5);
+        let sdxl = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.5, false);
         assert!(sdxl.get("prompt").and_then(|p| p.as_str()).unwrap().contains("creature"));
+    }
+
+    #[test]
+    fn regenerate_mode_uses_the_reimagine_prompt_and_high_strength_and_does_not_pin_exact_colors() {
+        let v = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, true);
+        let prompt = v.get("prompt").and_then(|p| p.as_str()).unwrap();
+        assert!(prompt.contains("brand-new"), "{prompt}");
+        assert!(!prompt.contains("EXACT same colors"), "regenerate mode must not pin exact colors: {prompt}");
+        let strength = v.get("strength").and_then(|s| s.as_f64()).unwrap();
+        assert!(strength >= 0.6, "regenerate strength should be high, got {strength}");
+
+        let faithful = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.85, false);
+        let faithful_strength = faithful.get("strength").and_then(|s| s.as_f64()).unwrap();
+        assert!(strength > faithful_strength, "regenerate must diverge more than the faithful mode at the same creativity");
+    }
+
+    #[test]
+    fn texture_prompt_regenerate_keeps_only_the_silhouette_constraint() {
+        let wolf = texture_prompt_regenerate("compiled/images/Animation/Monster/Ani_Monster_Wolf_Body_01_Diffuse_S1.png");
+        assert!(wolf.contains("creature"), "{wolf}");
+        assert!(wolf.contains("silhouette"));
+        assert!(wolf.contains("brand-new"));
     }
 
     #[test]

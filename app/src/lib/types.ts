@@ -107,6 +107,9 @@ export interface AppSettings {
   aiModel?: string | null;
   /** 0.1–0.9 "how much may the AI invent" dial; the AI mode buttons are presets over it. */
   aiCreativity?: number | null;
+  /** "✨ Нові текстури" mode: true = the AI fully repaints the texture (high strength, a
+   * reimagine prompt) instead of faithfully re-detailing it. */
+  aiRegenerate?: boolean | null;
 }
 
 export interface GameCheckResult {

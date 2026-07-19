@@ -45,7 +45,7 @@ export default function Guide({ lang }: Props) {
         },
         {
           title: "⚙️ Налаштування",
-          body: "Шлях до Risen.exe (або ярлика), провайдер і ключ ШІ (Replicate або Stability AI — без ключа все одно працює локальне покращення), режими якості (Точний/Деталізований/Ремастер/Художній), і кнопка «🚀 Текстури в гру» — один клік від прийнятих текстур до реальної гри.",
+          body: "Шлях до Risen.exe (або ярлика), провайдер і ключ ШІ (Replicate або Stability AI — без ключа все одно працює локальне покращення), два режими (Покращити — чесне збільшення без вигадок; ✨ Нові текстури — ШІ малює текстуру заново, з нуля, лишаючи тільки силует), і кнопка «🚀 Текстури в гру» — один клік від прийнятих текстур до реальної гри.",
         },
         {
           title: "Типовий робочий процес",
@@ -71,7 +71,7 @@ export default function Guide({ lang }: Props) {
         },
         {
           title: "⚙️ Settings",
-          body: "Path to Risen.exe (or a shortcut), AI provider and key (Replicate or Stability AI — local enhancement still works without one), quality presets (Faithful/Detailed/Remaster/Artistic), and a \"🚀 Ship to game\" button — one click from approved textures to the real game.",
+          body: "Path to Risen.exe (or a shortcut), AI provider and key (Replicate or Stability AI — local enhancement still works without one), two modes (Enhance — an honest upscale, invents nothing; ✨ New textures — the AI repaints the texture from scratch, keeping only the silhouette), and a \"🚀 Ship to game\" button — one click from approved textures to the real game.",
         },
         {
           title: "Typical workflow",
