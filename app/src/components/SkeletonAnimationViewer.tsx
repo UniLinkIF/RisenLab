@@ -8,6 +8,7 @@ import { deriveSpecularName, groupFacesByMaterial } from "../lib/materials";
 import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
 import { specularLuminanceToRoughness } from "../lib/roughness";
 import type { BoneMotion, SkeletonNode, SkinnedMeshData } from "../lib/types";
+import type { CameraSyncRef } from "../lib/cameraSync";
 
 /** See the matching helper in Model3DViewer.tsx: Genome's normal maps are DXT5-compressed
  * with X/Y swizzled into green/alpha (Z dropped entirely), which three.js has no idea about —
@@ -76,6 +77,10 @@ interface Props {
    * needing a new one-off code fix each time). */
   mirrorSkeleton: boolean;
   mirrorMesh: boolean;
+  /** Shared with a sibling viewer (owner request, 2026-07-19): rotating/zooming this camera
+   * mirrors onto the other panel and vice versa — see lib/cameraSync.ts. Absent/null = normal
+   * independent orbit. */
+  cameraSync?: CameraSyncRef | null;
 }
 
 /** Brute-forced all 24 proper signed-axis-permutation candidates for position+rotation against
@@ -153,7 +158,7 @@ export function motionDuration(tracks: BoneMotion[]): number {
   return d;
 }
 
-export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, resolveTexture, showSkeleton, mirrorSkeleton, mirrorMesh }: Props) {
+export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, resolveTexture, showSkeleton, mirrorSkeleton, mirrorMesh, cameraSync }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -175,6 +180,25 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     renderer.domElement.style.display = "block";
     container.appendChild(renderer.domElement);
     const controls = new OrbitControls(camera, renderer.domElement);
+
+    // Camera sync with a sibling side-by-side viewer (see lib/cameraSync.ts). `applyingSync`
+    // guards against an echo: `controls.update()` in `animate()` below (called after we set the
+    // camera/target programmatically) fires its own "change" event, which would otherwise
+    // immediately write this exact same state right back to the ref.
+    let applyingSync = false;
+    let lastAppliedSyncRev = -1;
+    if (cameraSync) {
+      controls.addEventListener("change", () => {
+        if (applyingSync) return;
+        const rev = performance.now();
+        lastAppliedSyncRev = rev;
+        cameraSync.current = {
+          rev,
+          position: [camera.position.x, camera.position.y, camera.position.z],
+          target: [controls.target.x, controls.target.y, controls.target.z],
+        };
+      });
+    }
 
     // Even, neutral lighting — see the matching comment in Model3DViewer.tsx: a single key
     // light left the model's far side nearly black, which read as "broken textures".
@@ -511,7 +535,15 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
         root.updateMatrixWorld(true);
         updateSkinning();
       }
+      const syncing = !!(cameraSync?.current && cameraSync.current.rev > lastAppliedSyncRev);
+      if (syncing && cameraSync?.current) {
+        lastAppliedSyncRev = cameraSync.current.rev;
+        applyingSync = true;
+        camera.position.set(...cameraSync.current.position);
+        controls.target.set(...cameraSync.current.target);
+      }
       controls.update();
+      if (syncing) applyingSync = false;
       renderer.render(scene, camera);
     }
     animate();
