@@ -35,6 +35,17 @@ pub struct AppSettings {
     /// 0.1–0.9 "how much may the AI invent" dial (see `risenlab::ai::AiConfig::creativity`).
     #[serde(default)]
     pub ai_creativity: Option<f32>,
+    /// "✨ Нові текстури" mode (see `risenlab::ai::AiConfig::regenerate` /
+    /// `texture_prompt_regenerate`). **Was missing from this struct until 2026-07-19** — the
+    /// Tauri `save_settings` command deserializes the frontend's JS object straight into this
+    /// struct, so any field absent here is silently DROPPED on every save, even though the
+    /// frontend sent it and `ai::parse_settings_ai` (which reads the JSON file directly) knows
+    /// how to read it. Root cause of an owner-reported "нічого не відрізняється, що б я не
+    /// вибирав" — the packaged exe could never actually persist regenerate mode, no matter which
+    /// Settings preset was clicked. Any NEW settings field must be added here too, not just in
+    /// `ai.rs`/`types.ts`/`Settings.tsx` — this struct is the third, easy-to-forget place.
+    #[serde(default)]
+    pub ai_regenerate: Option<bool>,
 }
 
 /// Reads `USERPROFILE` (Windows home dir); falls back to `.` if unset, which only happens
@@ -60,6 +71,7 @@ pub fn default_settings_for(home: &Path) -> AppSettings {
         ai_api_key: None,
         ai_model: None,
         ai_creativity: None,
+        ai_regenerate: None,
     }
 }
 
@@ -344,6 +356,27 @@ mod tests {
         save_settings_to(&path, &settings).unwrap();
         let loaded = load_settings(&path, default_settings_for(&dir));
         assert_eq!(loaded, settings);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Regression test for a real owner-reported bug (2026-07-19): `ai_regenerate` was missing
+    /// from `AppSettings`, so the Tauri `save_settings` command silently dropped the "✨ Нові
+    /// текстури" flag on every save — the packaged exe could never actually turn regenerate mode
+    /// on no matter which Settings preset was clicked, while `risenlab::ai::parse_settings_ai`
+    /// (which reads settings.json's raw JSON directly) would have read it fine if it had ever
+    /// been written. Asserts the real JSON text, not just the in-memory struct, since a field
+    /// silently missing from `AppSettings` would still pass a struct-only round-trip check.
+    #[test]
+    fn ai_regenerate_survives_the_real_json_round_trip() {
+        let dir = temp_dir("settings_ai_regenerate");
+        let path = settings_path(&dir);
+        let mut settings = default_settings_for(&dir);
+        settings.ai_regenerate = Some(true);
+        save_settings_to(&path, &settings).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"aiRegenerate\": true"), "field silently dropped on save: {raw}");
+        let loaded = load_settings(&path, default_settings_for(&dir));
+        assert_eq!(loaded.ai_regenerate, Some(true));
         std::fs::remove_dir_all(&dir).ok();
     }
 

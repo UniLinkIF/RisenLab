@@ -23,6 +23,15 @@ jobs:
         working-directory: app
         run: npm ci
 
+      # The sandbox this project is normally developed in can't compile src-tauri at all (no
+      # dlltool/MinGW binutils) — this is the ONLY place `logic.rs`'s tests (settings
+      # round-trip, review-status, etc.) actually run. Catches the exact class of bug that
+      # shipped once already: a field present in the JSON/TS side but silently dropped by the
+      # Rust `AppSettings` struct (see `ai_regenerate_survives_the_real_json_round_trip`).
+      - name: Test Tauri backend
+        working-directory: app/src-tauri
+        run: cargo test
+
       - name: Build Tauri app
         working-directory: app
         run: npx tauri build
