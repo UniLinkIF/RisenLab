@@ -16,6 +16,17 @@ interface Props {
 
 type Mode = "side" | "slider" | "3d";
 
+/** Pure factory kept OUTSIDE the component so the two resolvers built from it below can be
+ * `useMemo`'d — see the call sites for why that memoization matters (the "gray screens" bug). */
+function makeCompareResolver(entries: LibraryEntry[], currentPngRel: string | null, variantUrl: string | null) {
+  return async (baseName: string) => {
+    const found = findTextureEntryForBaseName(entries, baseName);
+    if (!found) return null;
+    if (currentPngRel && found.pngRel === currentPngRel) return variantUrl;
+    return readTextureDataUrl(found.pngRel);
+  };
+}
+
 export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   const s = t(lang);
   const [mode, setMode] = useState<Mode>("side");
@@ -85,12 +96,18 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
 
   // 3D mode: two viewers of the SAME mesh where only the reviewed texture differs — every
   // other material resolves normally, so multi-material models stay correct.
-  const makeResolver = (variantUrl: string | null) => async (baseName: string) => {
-    const found = findTextureEntryForBaseName(entries, baseName);
-    if (!found) return null;
-    if (current && found.pngRel === current.pngRel) return variantUrl;
-    return readTextureDataUrl(found.pngRel);
-  };
+  // Memoized, NOT a fresh closure built inline on every render: Model3DViewer includes
+  // `resolveTexture` in its mount effect's dependency array (by design — see its own doc
+  // comment), so an unmemoized factory here tore down and recreated BOTH WebGL contexts on
+  // every unrelated AiCompare re-render (e.g. the `busy` flag flipping during Approve/
+  // Regenerate) — even though the `key` below already handles the *real* remount case (a new
+  // texture selected). A review binge did that dozens of times a minute, and each teardown/
+  // recreate races the browser's live-context cap; past it a fresh canvas "silently never gets
+  // a real context and just stays blank forever" (Model3DViewer's own words) — this was the
+  // real root cause of the "сірі екрани" the owner saw, unrelated to camera sync.
+  const currentPngRel = current?.pngRel ?? null;
+  const originalResolver = useMemo(() => makeCompareResolver(entries, currentPngRel, original), [entries, currentPngRel, original]);
+  const variantResolver = useMemo(() => makeCompareResolver(entries, currentPngRel, variant), [entries, currentPngRel, variant]);
   const entry = useMemo(() => entries.find((e) => e.pngRel === current?.pngRel) ?? null, [entries, current]);
 
   useEffect(() => {
@@ -180,9 +197,9 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
       {mode === "3d" && modelObjUrl ? (
         <div style={{ flex: 1, display: "flex", gap: 2, padding: "18px 26px", minHeight: 0 }}>
           {([
-            [s.original, original, false],
-            [s.variant, variant, true],
-          ] as [string, string | null, boolean][]).map(([label, url, isVariant]) => (
+            [s.original, original, originalResolver, false],
+            [s.variant, variant, variantResolver, true],
+          ] as [string, string | null, (baseName: string) => Promise<string | null>, boolean][]).map(([label, url, resolver, isVariant]) => (
             <div key={label} style={{ flex: 1, position: "relative", minWidth: 0, borderRadius: 14, overflow: "hidden", border: `1px solid ${isVariant ? "var(--accent)" : "var(--border-strong)"}` }}>
               <Model3DViewer
                 key={`${current.pngRel}::${isVariant ? "v" : "o"}::${url ?? ""}`}
@@ -190,7 +207,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
                 diffuseUrl={url}
                 normalUrl={null}
                 mode="textured"
-                resolveTexture={makeResolver(url)}
+                resolveTexture={resolver}
               />
               <div style={{ position: "absolute", top: 10, left: 10, font: "700 10px system-ui", color: isVariant ? "#fff" : "var(--text-dim)", background: isVariant ? "var(--accent)" : "rgba(0,0,0,.45)", padding: "4px 9px", borderRadius: 6, pointerEvents: "none" }}>
                 {label}
