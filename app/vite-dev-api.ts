@@ -50,7 +50,18 @@ function defaultSettings() {
     aiRegenerate: null as boolean | null,
   };
 }
-const SETTINGS_PATH = path.join(PROJECT_ROOT, "settings.json");
+// The PACKAGED app (src-tauri/src/main.rs) stores settings.json under Tauri's own
+// `app_config_dir()`, which on Windows resolves to `%APPDATA%\<identifier>` — `com.risenlab.app`
+// per tauri.conf.json. This dev bridge used to keep a SEPARATE settings.json under
+// Desktop/RisenLab-Project instead, which drifted out of sync with whatever the owner actually
+// configured in the real app (real incident, 2026-07-20: the owner had long since repointed the
+// real app's outputDir to Desktop/RisenLab-Textures, but this file still pointed at the deleted
+// Desktop/RisenLab-Project/textures — every dev-preview library/texture read failed with
+// "reading manifest ... cannot find the path", including when the owner themselves opened
+// localhost:1420 directly and hit the exact same error). Pointing this at the SAME file the
+// packaged app reads/writes removes the divergence entirely — dev-preview testing now reflects
+// whatever the owner has actually configured, with nothing to keep in sync by hand.
+const SETTINGS_PATH = path.join(process.env.APPDATA ?? path.join(homeDesktop(), "..", "AppData", "Roaming"), "com.risenlab.app", "settings.json");
 
 async function readJsonBody(req: IncomingMessage): Promise<any> {
   const chunks: Buffer[] = [];

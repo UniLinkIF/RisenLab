@@ -3,10 +3,18 @@
 // real Steam install, 2026-07-20): Items_Weapons_Swords_01 (49), Items_Weapons_Shields_01 (8),
 // Items_Weapons_Axes_01 (12), Items_Weapons_Staffs_01 (10), Items_Weapons_Ammo_01 (2),
 // Items_Helmets_01 (7), Items_01 (120 — a real mixed bag: food, valuables, tools, books,
-// potions), Items_Plants_01 (18), and actors under _emfx36/{Monster,Humans,Mobsis}/Bodys.
+// potions), Items_Plants_01 (18), and actors under _emfx36/{Monster,Humans}/Bodys.
 // Everything else (Levelmesh_*, Objects_Misc_01/Nat_01/Interacts_01, Editor_*, Testkram_*,
 // _emfx36/Heads, _emfx36/Items) is level geometry/editor/technical cruft, not a real
-// standalone "item" worth putting on display — deliberately excluded.
+// standalone "item" worth putting on display — deliberately excluded. `_emfx36/Mobsis/Bodys`
+// is ALSO excluded: despite the name and despite being real .xmac actors, every entry there
+// (verified against the owner's connected game, 2026-07-20 — all 20 of them) is an
+// `Object_Interact_Animated_*` rig — a winch, a well crank, a sarcophagus lid, a treasure
+// chest — not a creature, so it doesn't belong in a "characters" room. It was the real,
+// fully-diagnosed cause of a chunk of the owner-reported "white models" in the figures room:
+// a rigged prop's skeleton bind pose can look vaguely humanoid in silhouette, but it has no
+// body/cloth diffuse material to resolve, so it renders as the plain white fallback forever
+// (confirmed live: not a texture-load timing issue — the pop-in had long finished).
 import type { ActorEntry, MeshEntry } from "./types";
 
 export type ItemZoneId = "swords" | "shields" | "weaponsMisc" | "food" | "valuables" | "tools";
@@ -52,9 +60,10 @@ export function categorizeMesh(entry: MeshEntry): ItemZoneId | null {
 
 export function categorizeActor(entry: ActorEntry): ActorZoneId | null {
   // Real folders look like "_emfx36/Monster/Bodys" — substring match, not equality, since the
-  // exact depth/casing isn't guaranteed stable across every archive.
+  // exact depth/casing isn't guaranteed stable across every archive. `Mobsis` is deliberately
+  // NOT mapped to "mobs" — see the module doc comment for why (it's interactive-object rigs,
+  // not creatures).
   if (entry.folder.includes("Humans")) return "humans";
   if (entry.folder.includes("Monster")) return "monsters";
-  if (entry.folder.includes("Mobsis")) return "mobs";
   return null;
 }

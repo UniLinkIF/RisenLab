@@ -45,11 +45,19 @@ describe("categorizeActor", () => {
   it("routes real actor folders (substring match on the real _emfx36/X/Bodys shape)", () => {
     expect(categorizeActor(actor("_emfx36/Humans/Bodys", "Ani_Hero._xmac"))).toBe("humans");
     expect(categorizeActor(actor("_emfx36/Monster/Bodys", "Ani_Monster_Wolf._xmac"))).toBe("monsters");
-    expect(categorizeActor(actor("_emfx36/Mobsis/Bodys", "Ani_Mob_Cow._xmac"))).toBe("mobs");
   });
 
-  it("excludes head-only and animated-interactable-item actors", () => {
+  it("excludes head-only and animated-interactable-item actors, INCLUDING Mobsis", () => {
     expect(categorizeActor(actor("_emfx36/Heads/Bodys", "Head_01._xmac"))).toBeNull();
     expect(categorizeActor(actor("_emfx36/Items/Bodys", "Object_Interact_Button._xmac"))).toBeNull();
+    // Real data check against the owner's connected game, 2026-07-20: every one of the 20
+    // real _emfx36/Mobsis/Bodys entries is an Object_Interact_Animated_* prop rig (a winch, a
+    // sarcophagus, a treasure chest...), not a creature — despite the folder's name and despite
+    // being real skinned .xmac actors. Including them in the Showroom's "characters" room was
+    // the actual, fully-diagnosed cause of a chunk of the owner-reported "white models": a
+    // prop's bind-pose skeleton can look vaguely humanoid, but it has no body/cloth diffuse
+    // material to resolve against the texture library, so it renders as the plain white
+    // fallback forever (confirmed live — not a texture-load timing issue).
+    expect(categorizeActor(actor("_emfx36/Mobsis/Bodys", "Object_Interact_Animated_Winch._xmac"))).toBeNull();
   });
 });

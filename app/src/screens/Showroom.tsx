@@ -33,6 +33,13 @@ interface PlacedEntry {
    * for things meant to lie flat on a table (food/valuables/tools) or that are already upright by
    * nature (actors). */
   orient?: "vertical";
+  /** Recentering an object on its bounding-box CENTER (the default) puts that center at the
+   * placed Y — fine for a wall-mounted display anchor, but for anything meant to stand/rest ON a
+   * surface (a character on the floor, an item on a table) it buries the bottom half below that
+   * surface (owner screenshots, 2026-07-20: "Персонажі на половину в землі" / "Припаси і скарби
+   * також на половину в землі"). `true` recenters X/Z on the bbox center as usual but aligns Y so
+   * the bbox's BOTTOM sits at the placed Y instead. */
+  grounded?: boolean;
 }
 
 const ROOM_GAP = 10;
@@ -70,7 +77,7 @@ function buildHall(
   const miscCols = 8;
   const miscRows = gridRowCount(weaponsMisc.length, miscCols);
   gridPositions({ count: weaponsMisc.length, columns: miscCols, cellSize: 1.6, origin: [-((miscCols - 1) * 1.6) / 2, 1.1, room1Z + 4], axis: "floor" }).forEach((p, i) =>
-    placed.push({ key: `mesh:${weaponsMisc[i].entryPath}`, kind: "mesh", entry: weaponsMisc[i], position: p, targetSize: 1.1 }),
+    placed.push({ key: `mesh:${weaponsMisc[i].entryPath}`, kind: "mesh", entry: weaponsMisc[i], position: p, targetSize: 1.1, grounded: true }),
   );
   const room1Depth = Math.max(16, miscRows * 1.6 + 8);
 
@@ -98,13 +105,13 @@ function buildHall(
   );
   const figureOriginX = -((figureCols - 1) * FIGURE_SPACING) / 2;
   gridPositions({ count: humans.length, columns: figureCols, cellSize: FIGURE_SPACING, origin: [figureOriginX, 0, figureRankZ.humans], axis: "floor" }).forEach((p, i) =>
-    placed.push({ key: `actor:${humans[i].entryPath}`, kind: "actor", entry: humans[i], position: p, targetSize: 2 }),
+    placed.push({ key: `actor:${humans[i].entryPath}`, kind: "actor", entry: humans[i], position: p, targetSize: 2, grounded: true }),
   );
   gridPositions({ count: monsters.length, columns: figureCols, cellSize: FIGURE_SPACING, origin: [figureOriginX, 0, figureRankZ.monsters], axis: "floor" }).forEach((p, i) =>
-    placed.push({ key: `actor:${monsters[i].entryPath}`, kind: "actor", entry: monsters[i], position: p, targetSize: 2.2 }),
+    placed.push({ key: `actor:${monsters[i].entryPath}`, kind: "actor", entry: monsters[i], position: p, targetSize: 2.2, grounded: true }),
   );
   gridPositions({ count: mobs.length, columns: figureCols, cellSize: FIGURE_SPACING, origin: [figureOriginX, 0, figureRankZ.mobs], axis: "floor" }).forEach((p, i) =>
-    placed.push({ key: `actor:${mobs[i].entryPath}`, kind: "actor", entry: mobs[i], position: p, targetSize: 1.8 }),
+    placed.push({ key: `actor:${mobs[i].entryPath}`, kind: "actor", entry: mobs[i], position: p, targetSize: 1.8, grounded: true }),
   );
   const room2Depth = figureRankZ.mobs - room2Z + mobsRows * FIGURE_SPACING + 3;
 
@@ -120,13 +127,13 @@ function buildHall(
   const room3Depth =
     Math.max(gridRowCount(food.length, foodCols), gridRowCount(valuables.length, valuableCols), gridRowCount(tools.length, toolCols)) * 1.1 + 6;
   gridPositions({ count: food.length, columns: foodCols, cellSize: 1.0, origin: [-16, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
-    placed.push({ key: `mesh:${food[i].entryPath}`, kind: "mesh", entry: food[i], position: p, targetSize: 0.6 }),
+    placed.push({ key: `mesh:${food[i].entryPath}`, kind: "mesh", entry: food[i], position: p, targetSize: 0.6, grounded: true }),
   );
   gridPositions({ count: valuables.length, columns: valuableCols, cellSize: 0.9, origin: [-3, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
-    placed.push({ key: `mesh:${valuables[i].entryPath}`, kind: "mesh", entry: valuables[i], position: p, targetSize: 0.4 }),
+    placed.push({ key: `mesh:${valuables[i].entryPath}`, kind: "mesh", entry: valuables[i], position: p, targetSize: 0.4, grounded: true }),
   );
   gridPositions({ count: tools.length, columns: toolCols, cellSize: 1.0, origin: [8, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
-    placed.push({ key: `mesh:${tools[i].entryPath}`, kind: "mesh", entry: tools[i], position: p, targetSize: 0.7 }),
+    placed.push({ key: `mesh:${tools[i].entryPath}`, kind: "mesh", entry: tools[i], position: p, targetSize: 0.7, grounded: true }),
   );
 
   return { placed, totalDepth: room3Z + room3Depth, roomStarts };
@@ -218,6 +225,46 @@ export default function Showroom({ lang }: Props) {
       controls.update();
     };
 
+    // WASD walking, constant speed regardless of orbit distance — mouse-wheel zoom through
+    // OrbitControls is multiplicative (each tick scales the remaining distance), so covering the
+    // hall's real length that way gets slower the farther out you are (owner report, 2026-07-20:
+    // "чим дальше рухаєшся тим помаліше наближаєшся"). Moving camera + orbit target together by
+    // the same fixed-speed vector each frame sidesteps that entirely — same ground speed at any
+    // distance, and OrbitControls' own update() keeps the orbit offset intact since both move
+    // together (the standard "fly the whole rig" technique, not fighting the library).
+    const pressedKeys = new Set<string>();
+    const WALK_KEYS = new Set(["w", "a", "s", "d"]);
+    function onKeyDown(e: KeyboardEvent) {
+      const k = e.key.toLowerCase();
+      if (WALK_KEYS.has(k)) pressedKeys.add(k);
+    }
+    function onKeyUp(e: KeyboardEvent) {
+      pressedKeys.delete(e.key.toLowerCase());
+    }
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    const WALK_SPEED = 14; // world units / second
+    const forward = new THREE.Vector3();
+    const right = new THREE.Vector3();
+    const moveDelta = new THREE.Vector3();
+    function applyWalk(deltaSeconds: number) {
+      if (pressedKeys.size === 0) return;
+      camera.getWorldDirection(forward);
+      forward.y = 0;
+      if (forward.lengthSq() < 1e-6) return;
+      forward.normalize();
+      right.crossVectors(forward, camera.up).normalize();
+      moveDelta.set(0, 0, 0);
+      if (pressedKeys.has("w")) moveDelta.add(forward);
+      if (pressedKeys.has("s")) moveDelta.sub(forward);
+      if (pressedKeys.has("d")) moveDelta.add(right);
+      if (pressedKeys.has("a")) moveDelta.sub(right);
+      if (moveDelta.lengthSq() < 1e-6) return;
+      moveDelta.normalize().multiplyScalar(WALK_SPEED * deltaSeconds);
+      camera.position.add(moveDelta);
+      controls.target.add(moveDelta);
+    }
+
     scene.add(new THREE.HemisphereLight(0xffffff, 0x30343d, 1.3));
     const key = new THREE.DirectionalLight(0xfff3e0, 1.1);
     key.position.set(6, 12, 4);
@@ -240,8 +287,11 @@ export default function Showroom({ lang }: Props) {
     const leftWall = new THREE.Mesh(wallGeo, wallMat);
     leftWall.position.set(-13, 6, 6);
     scene.add(leftWall);
+    // The shield grid (4 cols × 1.8 cellSize, from x=11) spans out to x=16.4 — a wall at the
+    // OLD x=13 sat mid-grid, clipping straight through the second column of shields (owner
+    // screenshot, 2026-07-20: "Щити в стіні"). 18 clears the grid's full extent with margin.
     const rightWall = leftWall.clone();
-    rightWall.position.set(13, 6, 6);
+    rightWall.position.set(18, 6, 6);
     scene.add(rightWall);
 
     const tableMat = new THREE.MeshStandardMaterial({ color: 0x3a2c20, roughness: 0.8 });
@@ -372,7 +422,12 @@ export default function Showroom({ lang }: Props) {
       const box = new THREE.Box3().setFromObject(object); // AFTER rotation, so this bbox reflects final orientation
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
-      object.position.sub(center); // recenter on its own origin before placing
+      // X/Z always recenter on the bbox center (so a grid column/row lines up with the object's
+      // horizontal middle). Y defaults to the same center — right for a wall-mounted display
+      // anchor — but anything meant to REST on a surface needs its bbox BOTTOM at the placed Y
+      // instead, or half of it renders below the floor/table (owner screenshots, 2026-07-20:
+      // "Персонажі на половину в землі", "Припаси і скарби також на половину в землі").
+      object.position.sub(new THREE.Vector3(center.x, item.grounded ? box.min.y : center.y, center.z));
       const scale = normalizeScale([size.x, size.y, size.z], item.targetSize);
       const holder = new THREE.Group();
       holder.add(object);
@@ -403,8 +458,13 @@ export default function Showroom({ lang }: Props) {
     void loadAll();
 
     let frame = 0;
+    let lastFrameTime = performance.now();
     function animate() {
       frame = requestAnimationFrame(animate);
+      const now = performance.now();
+      const deltaSeconds = Math.min(0.1, (now - lastFrameTime) / 1000); // cap avoids a huge jump after a tab was backgrounded
+      lastFrameTime = now;
+      applyWalk(deltaSeconds);
       controls.update();
       renderer.render(scene, camera);
     }
@@ -430,6 +490,8 @@ export default function Showroom({ lang }: Props) {
       disposed = true;
       cancelled = true;
       cancelAnimationFrame(frame);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
       resizeObserver.disconnect();
       controls.dispose();
       renderer.dispose();
