@@ -7,18 +7,20 @@
 // Everything else (Levelmesh_*, Objects_Misc_01/Nat_01/Interacts_01, Editor_*, Testkram_*,
 // _emfx36/Heads, _emfx36/Items) is level geometry/editor/technical cruft, not a real
 // standalone "item" worth putting on display — deliberately excluded. `_emfx36/Mobsis/Bodys`
-// is ALSO excluded: despite the name and despite being real .xmac actors, every entry there
-// (verified against the owner's connected game, 2026-07-20 — all 20 of them) is an
-// `Object_Interact_Animated_*` rig — a winch, a well crank, a sarcophagus lid, a treasure
-// chest — not a creature, so it doesn't belong in a "characters" room. It was the real,
-// fully-diagnosed cause of a chunk of the owner-reported "white models" in the figures room:
-// a rigged prop's skeleton bind pose can look vaguely humanoid in silhouette, but it has no
-// body/cloth diffuse material to resolve, so it renders as the plain white fallback forever
-// (confirmed live: not a texture-load timing issue — the pop-in had long finished).
+// is a real, separate `"props"` zone (2026-07-21) rather than either "excluded" or "mobs":
+// despite the name and despite being real .xmac actors, every entry there (verified against
+// the owner's connected game, 2026-07-20 — all 20 of them) is an `Object_Interact_Animated_*`
+// rig — a winch, a well crank, a sarcophagus lid, a treasure chest — not a creature, so it
+// doesn't belong in the "characters" room (that WAS the real, fully-diagnosed cause of a chunk
+// of the owner-reported "white models" there: a rigged prop's skeleton bind pose can look
+// vaguely humanoid in silhouette, but has no body/cloth diffuse material to resolve against —
+// confirmed live, not a texture-load timing issue). The owner explicitly asked (2026-07-20) for
+// the Showroom to eventually show these too, just not mislabeled as people — a dedicated
+// fourth room, not a re-inclusion into "characters".
 import type { ActorEntry, MeshEntry } from "./types";
 
 export type ItemZoneId = "swords" | "shields" | "weaponsMisc" | "food" | "valuables" | "potions" | "tools";
-export type ActorZoneId = "humans" | "monsters" | "mobs";
+export type ActorZoneId = "humans" | "monsters" | "mobs" | "props";
 
 const FOOD_KEYWORDS = [
   "bread", "cheese", "meat", "turkey", "sausage", "wine", "milk", "grape", "apple", "carrot",
@@ -64,12 +66,25 @@ export function categorizeMesh(entry: MeshEntry): ItemZoneId | null {
   }
 }
 
+// `Ani_Hero_Skeleton` is the ONE entry in the real `_emfx36/Humans/Bodys` folder that doesn't
+// follow the `Ani_Hero_Armor_*` naming every other real human variant uses (confirmed 2026-07-21
+// by converting it and reading its own real .mtl: a single `EMFX_Default` material with no
+// `map_Kd` line at all — a bare animation-rigging reference, not a dressed, texturable
+// character). It's a real, CONFIRMED (not guessed) contributor to the "white models" in the
+// figures room — every other white figure checked the same way (Woman_Peasant, Woman_Slave,
+// Don_Hunter, Guard) had real, correctly-resolvable `map_Kd` references, so this specific file
+// is excluded rather than assuming the whole texture-resolution path is broken.
+const BARE_RIG_ACTOR_NAMES = new Set(["ani_hero_skeleton"]);
+
 export function categorizeActor(entry: ActorEntry): ActorZoneId | null {
+  if (BARE_RIG_ACTOR_NAMES.has(entry.name.replace(/\._xmac$/i, "").toLowerCase())) return null;
   // Real folders look like "_emfx36/Monster/Bodys" — substring match, not equality, since the
   // exact depth/casing isn't guaranteed stable across every archive. `Mobsis` is deliberately
-  // NOT mapped to "mobs" — see the module doc comment for why (it's interactive-object rigs,
-  // not creatures).
+  // NOT mapped to "mobs" (see the module doc comment for why — it's interactive-object rigs,
+  // not creatures) but IS its own "props" zone (2026-07-21, owner request: show everything,
+  // just not mislabeled as a character) — a real fourth Showroom room, not the figures room.
   if (entry.folder.includes("Humans")) return "humans";
   if (entry.folder.includes("Monster")) return "monsters";
+  if (entry.folder.includes("Mobsis")) return "props";
   return null;
 }

@@ -151,7 +151,23 @@ function buildHall(
     placed.push({ key: `mesh:${tools[i].entryPath}`, kind: "mesh", entry: tools[i], position: p, targetSize: 0.7, grounded: true }),
   );
 
-  return { placed, totalDepth: room3Z + room3Depth, roomStarts };
+  // --- Room 4: interactive props — the real _emfx36/Mobsis/Bodys rigs (chests, sarcophagi,
+  // winches, well cranks) that were excluded from Room 2 for being mislabeled as creatures (see
+  // showroomCategorize.ts's module doc). Owner explicitly asked (2026-07-20) to eventually show
+  // these too, just not as "characters" — a real, separate room, not a re-inclusion. Same floor-
+  // grid layout as the figures room; a generous targetSize since these props vary a lot in
+  // real scale (a treasure chest vs. a well crank). ---
+  const room4Z = room3Z + room3Depth + ROOM_GAP;
+  roomStarts.push({ id: "props", label: { uk: "🗝 Реквізит", en: "🗝 Props" }, z: room4Z });
+  const props = actorsByZone.props;
+  const propCols = 6;
+  const propOriginX = -((propCols - 1) * 3) / 2;
+  gridPositions({ count: props.length, columns: propCols, cellSize: 3, origin: [propOriginX, 0, room4Z + 3], axis: "floor" }).forEach((p, i) =>
+    placed.push({ key: `actor:${props[i].entryPath}`, kind: "actor", entry: props[i], position: p, targetSize: 1.8, grounded: true }),
+  );
+  const room4Depth = gridRowCount(props.length, propCols) * 3 + 6;
+
+  return { placed, totalDepth: room4Z + room4Depth, roomStarts };
 }
 
 const CONCURRENT_LOADS = 5;
@@ -192,7 +208,7 @@ export default function Showroom({ lang }: Props) {
       const zone = categorizeMesh(m);
       if (zone) itemsByZone[zone].push(m);
     }
-    const actorsByZone: Record<ActorZoneId, ActorEntry[]> = { humans: [], monsters: [], mobs: [] };
+    const actorsByZone: Record<ActorZoneId, ActorEntry[]> = { humans: [], monsters: [], mobs: [], props: [] };
     for (const a of actors) {
       const zone = categorizeActor(a);
       if (zone) actorsByZone[zone].push(a);

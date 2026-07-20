@@ -57,9 +57,21 @@ describe("categorizeActor", () => {
     expect(categorizeActor(actor("_emfx36/Monster/Bodys", "Ani_Monster_Wolf._xmac"))).toBe("monsters");
   });
 
-  it("excludes head-only and animated-interactable-item actors, INCLUDING Mobsis", () => {
+  it("excludes Ani_Hero_Skeleton — confirmed textureless bare rig, not a dressed character", () => {
+    // Real check (2026-07-21): converted it and read its own real .mtl — a single
+    // `EMFX_Default` material with no `map_Kd` line at all, unlike every other real
+    // `Ani_Hero_Armor_*` human variant (all confirmed to have real, resolvable diffuse
+    // references). Guaranteed to render as the plain white fallback forever, so excluded the
+    // same way Mobsis props were excluded from "characters" — not a guess.
+    expect(categorizeActor(actor("_emfx36/Humans/Bodys", "Ani_Hero_Skeleton._xmac"))).toBeNull();
+  });
+
+  it("excludes head-only and animated-interactable-item actors", () => {
     expect(categorizeActor(actor("_emfx36/Heads/Bodys", "Head_01._xmac"))).toBeNull();
     expect(categorizeActor(actor("_emfx36/Items/Bodys", "Object_Interact_Button._xmac"))).toBeNull();
+  });
+
+  it("routes Mobsis to its own props zone, not characters", () => {
     // Real data check against the owner's connected game, 2026-07-20: every one of the 20
     // real _emfx36/Mobsis/Bodys entries is an Object_Interact_Animated_* prop rig (a winch, a
     // sarcophagus, a treasure chest...), not a creature — despite the folder's name and despite
@@ -67,7 +79,8 @@ describe("categorizeActor", () => {
     // the actual, fully-diagnosed cause of a chunk of the owner-reported "white models": a
     // prop's bind-pose skeleton can look vaguely humanoid, but it has no body/cloth diffuse
     // material to resolve against the texture library, so it renders as the plain white
-    // fallback forever (confirmed live — not a texture-load timing issue).
-    expect(categorizeActor(actor("_emfx36/Mobsis/Bodys", "Object_Interact_Animated_Winch._xmac"))).toBeNull();
+    // fallback forever (confirmed live — not a texture-load timing issue). They get their own
+    // "props" zone (2026-07-21) instead — shown, just not mislabeled as people.
+    expect(categorizeActor(actor("_emfx36/Mobsis/Bodys", "Object_Interact_Animated_Winch._xmac"))).toBe("props");
   });
 });
