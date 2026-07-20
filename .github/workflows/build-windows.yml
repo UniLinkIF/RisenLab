@@ -3,6 +3,11 @@ name: Build Windows app
 on:
   workflow_dispatch:
 
+# Needed to publish/update the GitHub Release below — the default GITHUB_TOKEN is read-only
+# unless a workflow explicitly asks for write access.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -93,3 +98,30 @@ jobs:
             app/src-tauri/target/release/mimicry-helper.exe
             app/src-tauri/target/release/cloudflared.exe
           if-no-files-found: error
+
+      # Actions artifacts (the upload above) need a GitHub login to download even on a public
+      # repo — no good for "send a colleague a link". A Release asset is a plain public URL, no
+      # auth needed. One ZIP with all three files at the top level — owner: "щоб людина могла
+      # просто скачати архів, розпакувати його в любу папку і все працювало" — helper_exe_path()/
+      # cloudflared_path() both resolve relative to wherever risenlab-ui.exe itself ends up, not
+      # a hardcoded folder, so this works unzipped anywhere, not just the Desktop.
+      - name: Package the portable zip
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist-release | Out-Null
+          Copy-Item app/src-tauri/target/release/risenlab-ui.exe dist-release/RisenLab.exe
+          Copy-Item app/src-tauri/target/release/mimicry-helper.exe dist-release/
+          Copy-Item app/src-tauri/target/release/cloudflared.exe dist-release/
+          Compress-Archive -Path dist-release/* -DestinationPath RisenLab-portable.zip -Force
+
+      # Rolling "latest" release: the owner always shares the SAME link, this just keeps its
+      # attached zip current on every build instead of piling up a new release per version.
+      - name: Publish the portable zip to the "latest" release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest RisenLab-portable.zip \
+            --title "RisenLab (portable, always up to date)" \
+            --notes "Автоматична збірка з main (${{ github.sha }}). Розпакуй в будь-яку папку — RisenLab.exe, mimicry-helper.exe і cloudflared.exe вже разом. / Automated build from main. Unzip anywhere — RisenLab.exe, mimicry-helper.exe, and cloudflared.exe already travel together."
