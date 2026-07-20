@@ -10,7 +10,7 @@ import { deriveNormalName, deriveSpecularName, findTextureEntryForBaseName } fro
 import { looksDxt5nmSwizzled, reconstructTangentNormalMap } from "../lib/normalMap";
 import { specularLuminanceToRoughness } from "../lib/roughness";
 import { categorizeActor, categorizeMesh, type ActorZoneId, type ItemZoneId } from "../lib/showroomCategorize";
-import { gridPositions, gridRowCount, normalizeScale, rowPositions, type Vec3 } from "../lib/showroomLayout";
+import { gridPositions, gridRowCount, normalizeScale, stackZones, type Vec3 } from "../lib/showroomLayout";
 
 interface Props {
   lang: Lang;
@@ -26,6 +26,13 @@ interface PlacedEntry {
   entry: MeshEntry | ActorEntry;
   position: Vec3;
   targetSize: number;
+  /** Game weapon meshes are authored lying flat (as dropped on the ground / an inventory icon) —
+   * their longest local axis is X or Z, not Y. Wall-mounted display needs them standing upright
+   * instead, so `"vertical"` tells `loadOne` to rotate the mesh's longest axis onto world Y before
+   * placing it. Omitted (undefined) leaves the mesh in its native orientation, which is correct
+   * for things meant to lie flat on a table (food/valuables/tools) or that are already upright by
+   * nature (actors). */
+  orient?: "vertical";
 }
 
 const ROOM_GAP = 10;
@@ -52,12 +59,12 @@ function buildHall(
   const swords = itemsByZone.swords;
   const swordCols = 7;
   gridPositions({ count: swords.length, columns: swordCols, cellSize: 1.5, origin: [-11, 5, room1Z + 3], axis: "wall" }).forEach((p, i) =>
-    placed.push({ key: `mesh:${swords[i].entryPath}`, kind: "mesh", entry: swords[i], position: p, targetSize: 1.3 }),
+    placed.push({ key: `mesh:${swords[i].entryPath}`, kind: "mesh", entry: swords[i], position: p, targetSize: 1.3, orient: "vertical" }),
   );
   const shields = itemsByZone.shields;
   const shieldCols = 4;
   gridPositions({ count: shields.length, columns: shieldCols, cellSize: 1.8, origin: [11, 5, room1Z + 3], axis: "wall" }).forEach((p, i) =>
-    placed.push({ key: `mesh:${shields[i].entryPath}`, kind: "mesh", entry: shields[i], position: p, targetSize: 1.6 }),
+    placed.push({ key: `mesh:${shields[i].entryPath}`, kind: "mesh", entry: shields[i], position: p, targetSize: 1.6, orient: "vertical" }),
   );
   const weaponsMisc = itemsByZone.weaponsMisc;
   const miscCols = 8;
@@ -67,25 +74,39 @@ function buildHall(
   );
   const room1Depth = Math.max(16, miscRows * 1.6 + 8);
 
-  // --- Room 2: the hall of figures — humans, monsters, and mobs each get their own row, all
-  // three walking the same length of hall side by side. ---
+  // --- Room 2: the hall of figures — humans, then monsters, then mobs, each its own rank
+  // standing shoulder-to-shoulder facing down the hall (a lineup against the back wall), not a
+  // single file receding into the distance — wraps to a new row behind itself once a rank gets
+  // too wide for one line. ---
   const room2Z = room1Z + room1Depth + ROOM_GAP;
   roomStarts.push({ id: "figures", label: { uk: "🧍 Персонажі", en: "🧍 Figures" }, z: room2Z });
   const humans = actorsByZone.humans;
   const monsters = actorsByZone.monsters;
   const mobs = actorsByZone.mobs;
-  const maxFigures = Math.max(humans.length, monsters.length, mobs.length, 1);
-  const room2Depth = maxFigures * FIGURE_SPACING + 6;
-  const rowCenterZ = room2Z + room2Depth / 2;
-  rowPositions({ count: humans.length, spacing: FIGURE_SPACING, origin: [-7, 0, rowCenterZ], axis: "z" }).forEach((p, i) =>
+  const figureCols = 10;
+  const humansRows = gridRowCount(humans.length, figureCols);
+  const monstersRows = gridRowCount(monsters.length, figureCols);
+  const mobsRows = gridRowCount(mobs.length, figureCols);
+  const figureRankZ = stackZones(
+    [
+      { id: "humans", depth: humansRows * FIGURE_SPACING },
+      { id: "monsters", depth: monstersRows * FIGURE_SPACING },
+      { id: "mobs", depth: mobsRows * FIGURE_SPACING },
+    ],
+    room2Z + 3,
+    3,
+  );
+  const figureOriginX = -((figureCols - 1) * FIGURE_SPACING) / 2;
+  gridPositions({ count: humans.length, columns: figureCols, cellSize: FIGURE_SPACING, origin: [figureOriginX, 0, figureRankZ.humans], axis: "floor" }).forEach((p, i) =>
     placed.push({ key: `actor:${humans[i].entryPath}`, kind: "actor", entry: humans[i], position: p, targetSize: 2 }),
   );
-  rowPositions({ count: monsters.length, spacing: FIGURE_SPACING, origin: [0, 0, rowCenterZ], axis: "z" }).forEach((p, i) =>
+  gridPositions({ count: monsters.length, columns: figureCols, cellSize: FIGURE_SPACING, origin: [figureOriginX, 0, figureRankZ.monsters], axis: "floor" }).forEach((p, i) =>
     placed.push({ key: `actor:${monsters[i].entryPath}`, kind: "actor", entry: monsters[i], position: p, targetSize: 2.2 }),
   );
-  rowPositions({ count: mobs.length, spacing: FIGURE_SPACING, origin: [7, 0, rowCenterZ], axis: "z" }).forEach((p, i) =>
+  gridPositions({ count: mobs.length, columns: figureCols, cellSize: FIGURE_SPACING, origin: [figureOriginX, 0, figureRankZ.mobs], axis: "floor" }).forEach((p, i) =>
     placed.push({ key: `actor:${mobs[i].entryPath}`, kind: "actor", entry: mobs[i], position: p, targetSize: 1.8 }),
   );
+  const room2Depth = figureRankZ.mobs - room2Z + mobsRows * FIGURE_SPACING + 3;
 
   // --- Room 3: provisions & curios — three tables side by side: food, valuables, tools/books. ---
   const room3Z = room2Z + room2Depth + ROOM_GAP;
@@ -337,7 +358,18 @@ export default function Showroom({ lang }: Props) {
       const object = await new Promise<THREE.Group>((resolve, reject) => new OBJLoader().load(objUrl, resolve, undefined, reject));
       if (disposed) return;
       applyMaterials(object);
-      const box = new THREE.Box3().setFromObject(object);
+      if (item.orient === "vertical") {
+        // Weapon meshes are authored lying flat (as dropped on the ground / an inventory icon):
+        // their longest dimension sits on local X or Z, not Y. Rotate whichever local axis is
+        // longest onto world Y BEFORE the final bbox/recenter below, so a wall-mounted sword
+        // reads as a real hanging blade instead of floating at whatever diagonal its native mesh
+        // orientation happened to have (owner report, 2026-07-20 screenshot: swords scattered at
+        // random angles off the weapon wall).
+        const rawSize = new THREE.Box3().setFromObject(object).getSize(new THREE.Vector3());
+        if (rawSize.x >= rawSize.y && rawSize.x >= rawSize.z) object.rotation.z = Math.PI / 2;
+        else if (rawSize.z >= rawSize.y && rawSize.z >= rawSize.x) object.rotation.x = -Math.PI / 2;
+      }
+      const box = new THREE.Box3().setFromObject(object); // AFTER rotation, so this bbox reflects final orientation
       const size = box.getSize(new THREE.Vector3());
       const center = box.getCenter(new THREE.Vector3());
       object.position.sub(center); // recenter on its own origin before placing

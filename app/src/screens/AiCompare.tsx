@@ -17,6 +17,16 @@ interface Props {
 
 type Mode = "side" | "slider" | "3d";
 
+/** Some real game art (e.g. GUI_MainMenueBack) is legitimately dark — a torch-lit main-menu
+ * backdrop averaging near-black RGB, not a loading failure (owner report, 2026-07-20: "досі сірі
+ * чорні екрани" turned out to be a correctly-loaded, correctly-generated, just genuinely dark
+ * texture — verified by decoding both PNGs directly: fully opaque, real non-zero pixel data, not
+ * blank). Against this app's near-black theme (`--bg0`) a dark-but-real image was visually
+ * indistinguishable from an empty/broken panel. A neutral checkerboard behind the "contain"-fit
+ * image (standard image-editor transparency backdrop) frames it instead, so the panel's actual
+ * edges — and the fact that *something* loaded — stay visible regardless of how dark the art is. */
+const PREVIEW_CHECKER_BG = "repeating-conic-gradient(#3a3a42 0% 25%, #26262c 0% 50%) 50% / 22px 22px";
+
 /** Pure factory kept OUTSIDE the component so the two resolvers built from it below can be
  * `useMemo`'d — see the call sites for why that memoization matters (the "gray screens" bug). */
 function makeCompareResolver(entries: LibraryEntry[], currentPngRel: string | null, variantUrl: string | null) {
@@ -275,7 +285,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
                   flex: 1,
                   borderRadius: 14,
                   border: `1px solid ${border}`,
-                  background: url ? `center / contain no-repeat var(--bg0) url(${url})` : "var(--bg2)",
+                  background: url ? `center / contain no-repeat url(${url}), ${PREVIEW_CHECKER_BG}` : "var(--bg2)",
                 }}
               />
             </div>
@@ -298,7 +308,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
             }}
             style={{ position: "relative", height: "100%", borderRadius: 14, overflow: "hidden", border: "1px solid var(--border-strong)", cursor: "ew-resize", touchAction: "none", userSelect: "none" }}
           >
-            <div style={{ position: "absolute", inset: 0, background: variant ? `center / contain no-repeat var(--bg0) url(${variant})` : "var(--bg2)" }} />
+            <div style={{ position: "absolute", inset: 0, background: variant ? `center / contain no-repeat url(${variant}), ${PREVIEW_CHECKER_BG}` : "var(--bg2)" }} />
             {/* Full-size layer clipped from the right — both backgrounds scale/center
                 identically, so the two images stay perfectly aligned at any divider position
                 (the old fixed-width layer centered its image differently and never moved —
@@ -307,7 +317,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
               style={{
                 position: "absolute",
                 inset: 0,
-                background: original ? `center / contain no-repeat var(--bg0) url(${original})` : "var(--bg2)",
+                background: original ? `center / contain no-repeat url(${original}), ${PREVIEW_CHECKER_BG}` : "var(--bg2)",
                 clipPath: `inset(0 ${(1 - sliderPos) * 100}% 0 0)`,
               }}
             />
