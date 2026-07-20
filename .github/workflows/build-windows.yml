@@ -24,6 +24,16 @@ jobs:
         with:
           workspaces: app/src-tauri
 
+      # Root crate (`src/`) has no `[workspace]` tying it to `app/src-tauri` — `cargo test`
+      # inside src-tauri below only tests that crate, never this one, so its 100+ tests (the
+      # `.pak`/`._ximg`/`.xmot` format layer, including `install_patches`'s full-merge logic)
+      # had never actually run in CI at all. Unlike src-tauri, this crate builds fine in the dev
+      # sandbox too (see Cargo.toml's own notes on why: no windows-sys/eframe/rfd), so this step
+      # is redundant with local runs but is the only place a forgotten local test run would still
+      # get caught before a release.
+      - name: Test root crate
+        run: cargo test
+
       - name: Install frontend dependencies
         working-directory: app
         run: npm ci

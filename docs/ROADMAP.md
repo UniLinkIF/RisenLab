@@ -70,9 +70,14 @@ App (`app/`, Tauri + React + three.js):
 - **Titan "~10% black patches during animation"** — open, blocked on the owner reproducing it
   with a screenshot; every numeric diagnostic (materials/normals/weights/UV/unswizzle) has come
   back clean so far, so whatever's left is likely a render-state issue, not a data one.
-- `.pXX` override/priority rule against the real game was never empirically confirmed
-  end-to-end (texture patches have since been built/installed in later sessions, which
-  presumably exercises this — not explicitly re-verified against this specific claim).
+- **`.pXX` layering as an INSTALL mechanism is dead for `images.pak` — empirically confirmed by
+  the owner's own live test (2026-07-20):** an `images.p01` next to `images.pak` had no effect
+  in-game. `install_patches` (`src/batch.rs`) no longer relies on it: it now writes a full merged
+  replacement `.pak` (original backed up under `patch_dir/_originals/`) instead. `apply()` still
+  produces `.pNN` files — they're just the merge's input now, not the install format. See
+  `docs/p0x-patches.md`. **Still open: the merged-`.pak` install path itself has not yet been
+  tested against the real running game** (unit-tested only, same "never actually verified
+  end-to-end" gap this replaces — see next session's memory for whether the owner has tried it).
 
 ## Later / not started
 

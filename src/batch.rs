@@ -518,12 +518,38 @@ pub fn motion_tracks(archive_path: &Path, entry_path: &str, bone_names: &[String
     xmot::parse_motion(&data, bone_names)
 }
 
-/// Copies every built patch volume from `patch_dir` (`<group>/<archive>.pNN` — the layout
-/// `apply`/`pack` produce) into the game's own matching `data/<group>/` directory, next to the
-/// archive it patches. Never overwrites a file that already exists in the game dir with a
-/// DIFFERENT origin: only a byte-different same-named file is replaced (same-named = ours from
-/// a previous install — patch slots are allocated to be free at build time). Returns the
-/// installed file names, grouped.
+/// Is this file name a `.pNN` patch volume (`p` followed by all digits)? Shared by
+/// `install_patches`'s patch-discovery and its old copy-based sibling.
+fn is_patch_volume_name(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.len() >= 2 && e.starts_with('p') && e[1..].chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
+/// Where the pristine, never-patched copy of a live game archive is kept once this app is
+/// about to overwrite it — see `install_patches`.
+fn originals_backup_dir(patch_dir: &Path, group: &str) -> PathBuf {
+    patch_dir.join("_originals").join(group)
+}
+
+/// Installs every built `.pNN` patch from `patch_dir` (`<group>/<archive>.pNN` — the layout
+/// `apply`/`pack` produce) as a FULL merged replacement of the game's own `<archive>.pak`,
+/// rather than copying the `.pNN` next to it.
+///
+/// Why: the `.pNN` layering convention is real and documented (`docs/p0x-patches.md`), but the
+/// owner's own live test (2026-07-20) found the engine did NOT pick up `images.p01` sitting
+/// next to `images.pak` — the game showed the untouched original. Rather than keep guessing at
+/// the engine's actual override rule, this hands the game back an ordinary, complete `.pak` it
+/// already knows how to read, with only the patched entries' bytes swapped in.
+///
+/// The FIRST time a given `<stem>.pak` is touched, its current live bytes are copied to
+/// `patch_dir/_originals/<group>/<stem>.pak` — that backup is the pristine reference every
+/// future install folds patches onto (never onto a previously-merged copy, or repeated installs
+/// would compound). Every `<stem>.pNN` found in `patch_dir/<group>/` is folded on in ascending
+/// order (`p01` before `p02`, later wins on conflict) so patches built across multiple sessions
+/// all apply, not just the newest.
 pub fn install_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec<String>> {
     let exe = gamepath::resolve_shortcut(exe_or_shortcut)?;
     let root = gamepath::discover_game_root(&exe)
@@ -538,51 +564,89 @@ pub fn install_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec<S
         if !dest_group.is_dir() {
             bail!("game data directory missing: {}", dest_group.display());
         }
+
+        let mut patches_by_stem: HashMap<String, Vec<PathBuf>> = HashMap::new();
         for entry in fs::read_dir(&src_group)? {
             let path = entry?.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else { continue };
-            // Only .pNN patch volumes — never copy anything else that might sit in the folder.
-            let is_patch = Path::new(&name)
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.len() >= 2 && e.starts_with('p') && e[1..].chars().all(|c| c.is_ascii_digit()))
-                .unwrap_or(false);
-            if !path.is_file() || !is_patch {
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else { continue };
+            if !path.is_file() || !is_patch_volume_name(name) {
                 continue;
             }
-            fs::copy(&path, dest_group.join(&name))
-                .with_context(|| format!("copying {name} into {}", dest_group.display()))?;
-            installed.push(format!("{group}/{name}"));
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or_default().to_string();
+            patches_by_stem.entry(stem).or_default().push(path.clone());
+        }
+
+        for (stem, mut patches) in patches_by_stem {
+            patches.sort();
+            let live_pak = dest_group.join(format!("{stem}.pak"));
+            if !live_pak.is_file() {
+                bail!("no base {stem}.pak found in {}", dest_group.display());
+            }
+
+            let backup_dir = originals_backup_dir(patch_dir, group);
+            fs::create_dir_all(&backup_dir)?;
+            let backup_path = backup_dir.join(format!("{stem}.pak"));
+            if !backup_path.is_file() {
+                fs::copy(&live_pak, &backup_path)
+                    .with_context(|| format!("backing up {} before first install", live_pak.display()))?;
+            }
+
+            let mut current_base_path = backup_path.clone();
+            let mut stage_paths = Vec::new();
+            for (i, patch_path) in patches.iter().enumerate() {
+                let mut base_archive = pak::PakArchive::open(&current_base_path)
+                    .with_context(|| format!("opening {}", current_base_path.display()))?;
+                let mut patch_archive = pak::PakArchive::open(patch_path)
+                    .with_context(|| format!("opening {}", patch_path.display()))?;
+                let stage_path = dest_group.join(format!("{stem}.pak.risenlab-stage{i}"));
+                pak::merge_into_full_pak(&mut base_archive, &mut patch_archive, &stage_path)
+                    .with_context(|| format!("merging {} into {}", patch_path.display(), stem))?;
+                stage_paths.push(stage_path.clone());
+                current_base_path = stage_path;
+            }
+
+            fs::rename(&current_base_path, &live_pak)
+                .with_context(|| format!("installing merged {}", live_pak.display()))?;
+            for stage in &stage_paths {
+                if stage != &current_base_path {
+                    fs::remove_file(stage).ok();
+                }
+            }
+            installed.push(format!("{group}/{stem}.pak"));
         }
     }
     Ok(installed)
 }
 
-/// Removes previously installed patch volumes from the game: only files whose exact name also
-/// exists in `patch_dir` (i.e. files this app built) are deleted — nothing else in the game
-/// directory is ever touched. Returns the removed file names.
+/// Restores every game archive this app has ever full-merge-installed back to its pristine
+/// backup (`patch_dir/_originals/<group>/<stem>.pak`, written the first time `install_patches`
+/// touched it). The backup itself is left in place — a later `install_patches` call folds
+/// patches onto it again. Returns the restored `group/stem.pak` names.
 pub fn uninstall_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec<String>> {
     let exe = gamepath::resolve_shortcut(exe_or_shortcut)?;
     let root = gamepath::discover_game_root(&exe)
         .ok_or_else(|| anyhow!("no Risen data directory found near {}", exe.display()))?;
-    let mut removed = Vec::new();
+    let mut restored = Vec::new();
     for group in ["compiled", "common"] {
-        let src_group = patch_dir.join(group);
-        if !src_group.is_dir() {
+        let backup_dir = originals_backup_dir(patch_dir, group);
+        if !backup_dir.is_dir() {
             continue;
         }
         let dest_group = root.join("data").join(group);
-        for entry in fs::read_dir(&src_group)? {
+        for entry in fs::read_dir(&backup_dir)? {
             let path = entry?.path();
             let Some(name) = path.file_name().and_then(|n| n.to_str()).map(String::from) else { continue };
-            let installed = dest_group.join(&name);
-            if path.is_file() && installed.is_file() {
-                fs::remove_file(&installed).with_context(|| format!("removing {}", installed.display()))?;
-                removed.push(format!("{group}/{name}"));
+            if !path.is_file() {
+                continue;
+            }
+            let live = dest_group.join(&name);
+            if live.is_file() {
+                fs::copy(&path, &live).with_context(|| format!("restoring {}", live.display()))?;
+                restored.push(format!("{group}/{name}"));
             }
         }
     }
-    Ok(removed)
+    Ok(restored)
 }
 
 /// The four independently-toggleable local motion transforms (`xmot::stylize_tracks` plus the
@@ -1852,6 +1916,106 @@ mod tests {
 
         let nested = entries.iter().find(|e| e.name == "Wolf._xmsh").unwrap();
         assert_eq!(nested.folder, "Animation/Monster");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Builds a synthetic game (`data/compiled/images.pak`, one entry) plus a `.pNN` patch that
+    /// overrides that entry, and checks `install_patches` writes a FULL merged `images.pak`
+    /// back into the game directory (not a `.pNN` sitting next to it — that layering convention
+    /// was never confirmed to work in-game for images, see docs/p0x-patches.md) while backing
+    /// up the pristine original under `patch_dir/_originals/`.
+    #[test]
+    fn install_patches_merges_a_full_pak_and_backs_up_the_original() {
+        let tmp = temp_dir("install_patches_merge");
+        let bin_dir = tmp.join("bin");
+        let compiled_dir = tmp.join("data").join("compiled");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&compiled_dir).unwrap();
+        let exe = bin_dir.join("Risen.exe");
+        fs::write(&exe, b"x").unwrap();
+
+        let base_src = tmp.join("base_src");
+        fs::create_dir_all(base_src.join("Level")).unwrap();
+        fs::write(base_src.join("Level").join("Kept.txt"), b"unchanged").unwrap();
+        fs::write(base_src.join("Level").join("Foo.txt"), b"original").unwrap();
+        pak::write_archive_from_dir(&base_src, &compiled_dir.join("images.pak")).unwrap();
+
+        let patch_dir = tmp.join("patches");
+        let patch_src = tmp.join("patch_src");
+        fs::create_dir_all(patch_src.join("Level")).unwrap();
+        fs::write(patch_src.join("Level").join("Foo.txt"), b"patched!").unwrap();
+        fs::create_dir_all(patch_dir.join("compiled")).unwrap();
+        pak::write_archive_from_dir(&patch_src, &patch_dir.join("compiled").join("images.p01")).unwrap();
+
+        let installed = install_patches(&exe, &patch_dir).unwrap();
+        assert_eq!(installed, vec!["compiled/images.pak".to_string()]);
+
+        let mut live = pak::PakArchive::open(compiled_dir.join("images.pak")).unwrap();
+        let entries = live.files();
+        let read = |archive: &mut pak::PakArchive, entries: &[pak::FileEntry], p: &str| {
+            let e = entries.iter().find(|e| e.path == p).unwrap_or_else(|| panic!("missing {p}"));
+            archive.read_file(e).unwrap()
+        };
+        assert_eq!(read(&mut live, &entries, "/Level/Foo.txt"), b"patched!");
+        assert_eq!(read(&mut live, &entries, "/Level/Kept.txt"), b"unchanged");
+
+        let backup_path = patch_dir.join("_originals").join("compiled").join("images.pak");
+        assert!(backup_path.is_file(), "original must be backed up before the live file is overwritten");
+        let mut backup = pak::PakArchive::open(&backup_path).unwrap();
+        let backup_entries = backup.files();
+        assert_eq!(read(&mut backup, &backup_entries, "/Level/Foo.txt"), b"original", "backup must stay pristine");
+
+        // A second install (e.g. after another regenerate→build cycle) must fold onto the same
+        // pristine backup, not onto the already-merged live file, and must NOT overwrite the
+        // existing backup with the already-patched content.
+        let patch2_src = tmp.join("patch2_src");
+        fs::create_dir_all(patch2_src.join("Level")).unwrap();
+        fs::write(patch2_src.join("Level").join("Foo.txt"), b"patched twice!").unwrap();
+        pak::write_archive_from_dir(&patch2_src, &patch_dir.join("compiled").join("images.p02")).unwrap();
+
+        install_patches(&exe, &patch_dir).unwrap();
+        let mut live2 = pak::PakArchive::open(compiled_dir.join("images.pak")).unwrap();
+        let entries2 = live2.files();
+        assert_eq!(read(&mut live2, &entries2, "/Level/Foo.txt"), b"patched twice!", "p01 then p02, later wins");
+        assert_eq!(read(&mut live2, &entries2, "/Level/Kept.txt"), b"unchanged", "still carried through from the original base");
+        let mut backup2 = pak::PakArchive::open(&backup_path).unwrap();
+        let backup2_entries = backup2.files();
+        assert_eq!(read(&mut backup2, &backup2_entries, "/Level/Foo.txt"), b"original", "backup must never be overwritten by a later install");
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn uninstall_patches_restores_the_backed_up_original() {
+        let tmp = temp_dir("uninstall_patches_restore");
+        let bin_dir = tmp.join("bin");
+        let compiled_dir = tmp.join("data").join("compiled");
+        fs::create_dir_all(&bin_dir).unwrap();
+        fs::create_dir_all(&compiled_dir).unwrap();
+        let exe = bin_dir.join("Risen.exe");
+        fs::write(&exe, b"x").unwrap();
+
+        let base_src = tmp.join("base_src");
+        fs::create_dir_all(&base_src).unwrap();
+        fs::write(base_src.join("Foo.txt"), b"original").unwrap();
+        pak::write_archive_from_dir(&base_src, &compiled_dir.join("images.pak")).unwrap();
+
+        let patch_dir = tmp.join("patches");
+        let patch_src = tmp.join("patch_src");
+        fs::create_dir_all(&patch_src).unwrap();
+        fs::write(patch_src.join("Foo.txt"), b"patched!").unwrap();
+        fs::create_dir_all(patch_dir.join("compiled")).unwrap();
+        pak::write_archive_from_dir(&patch_src, &patch_dir.join("compiled").join("images.p01")).unwrap();
+
+        install_patches(&exe, &patch_dir).unwrap();
+        let removed = uninstall_patches(&exe, &patch_dir).unwrap();
+        assert_eq!(removed, vec!["compiled/images.pak".to_string()]);
+
+        let mut live = pak::PakArchive::open(compiled_dir.join("images.pak")).unwrap();
+        let entries = live.files();
+        let entry = entries.iter().find(|e| e.path == "/Foo.txt").unwrap();
+        assert_eq!(live.read_file(entry).unwrap(), b"original", "uninstall must restore the pristine backup");
 
         fs::remove_dir_all(&tmp).ok();
     }
