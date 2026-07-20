@@ -315,6 +315,30 @@ pub fn build_input(model: &str, image_data_uri: &str, png_rel: &str, scale: u32,
             "face_enhance": false,
         });
     }
+    if model.to_lowercase().contains("supir") {
+        // SUPIR (real model checked live against Replicate's metadata endpoint, 2026-07-20 —
+        // owner report: "чому фото не генерує" after typing shanginn/supir into the model
+        // field) has a COMPLETELY different input schema from every other model this app talks
+        // to: `image`/`captions`/`n_prompt`/`upscale`/`s_cfg`/`s_churn`/`s_noise`/`edm_steps`/…
+        // — nothing named `prompt`/`negative_prompt`/`strength`/`guidance_scale`. Falling
+        // through to the generic branch below would silently send fields SUPIR doesn't
+        // recognize, at best wasting the owner's prompt/creativity settings (SUPIR would just
+        // run on its own defaults) and at worst getting rejected outright by its schema
+        // validation. Map onto SUPIR's REAL fields instead: `captions` is its actual scene-
+        // description input (its own default: "a professional, detailed, high-quality photo"),
+        // `n_prompt` is its negative prompt. Every other SUPIR-specific knob (s_cfg/s_churn/
+        // s_noise/edm_steps/color_fix_type/upscale...) is left at SUPIR's own tuned defaults —
+        // this is a heavy, slow, real-compute model, and guessing a "creativity" mapping onto
+        // knobs nobody here has empirically validated risks wasting the owner's Replicate credit
+        // on a bad guess (unlike clarity-upscaler's creativity/resemblance dial, which WAS
+        // live-validated against the owner's own reference, see this function's own history).
+        let prompt = if regenerate { texture_prompt_regenerate(png_rel) } else { texture_prompt(png_rel) };
+        return serde_json::json!({
+            "image": image_data_uri,
+            "captions": prompt,
+            "n_prompt": format!("blurring, dirty, messy, worst quality, low quality, frames, watermark, signature, jpeg artifacts, deformed, lowres, over-smooth{negative_suffix}"),
+        });
+    }
     if regenerate {
         // Real incident (2026-07-19): strength this close to 1.0 makes SDXL-family img2img
         // models ignore the input image almost entirely — the "AI variant" came back as a
@@ -485,7 +509,12 @@ fn enhance_via_replicate(cfg: &AiConfig, src_png: &Path, png_rel: &str, scale: u
     let (orig_w, orig_h) = image::image_dimensions(src_png).with_context(|| format!("reading dimensions of {}", src_png.display()))?;
     // Only the generic img2img branch (non-clarity, non-esrgan) needs this — see
     // IMG2IMG_MAX_EDGE's doc comment.
-    let is_generic_img2img = !cfg.model.to_lowercase().contains("clarity") && !cfg.model.to_lowercase().contains("esrgan");
+    // SUPIR is itself a restoration/upscale model (like clarity/esrgan, unlike a generic SDXL
+    // img2img refiner) — it's built to take large inputs directly, not something that needs
+    // downscaling to dodge GPU OOM (see IMG2IMG_MAX_EDGE's doc comment, which is specifically
+    // about SDXL-family models running out of memory on a full-res texture).
+    let is_generic_img2img =
+        !cfg.model.to_lowercase().contains("clarity") && !cfg.model.to_lowercase().contains("esrgan") && !cfg.model.to_lowercase().contains("supir");
     let bytes = if is_generic_img2img { downscale_for_img2img(&bytes)? } else { bytes };
     let data_uri = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&bytes));
 
@@ -678,6 +707,22 @@ mod tests {
         assert_eq!(esrgan.get("scale").and_then(|v| v.as_u64()), Some(2));
         let sdxl = build_input("stability-ai/sdxl", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.5, false);
         assert!(sdxl.get("prompt").and_then(|p| p.as_str()).unwrap().contains("creature"));
+    }
+
+    #[test]
+    fn supir_input_uses_its_real_field_names_not_the_generic_img2img_ones() {
+        // Real model, checked live against Replicate's own metadata endpoint (2026-07-20, owner
+        // report: "чому фото не генерує" after typing shanginn/supir into the model field) —
+        // its actual schema has `captions`/`n_prompt`, never `prompt`/`negative_prompt`/
+        // `strength`/`guidance_scale`. Sending the generic fields wastes the owner's
+        // prompt/creativity settings at best (SUPIR just runs on its own defaults) and risks an
+        // outright schema-validation rejection at worst.
+        let v = build_input("shanginn/supir", "data:image/png;base64,xxx", "Monster_Wolf_Diffuse.png", 2, 0.5, false);
+        assert!(v.get("captions").and_then(|p| p.as_str()).unwrap().contains("creature"));
+        assert!(v.get("n_prompt").is_some());
+        for absent in ["prompt", "negative_prompt", "strength", "guidance_scale", "scale_factor", "scale"] {
+            assert!(v.get(absent).is_none(), "SUPIR input should not carry the unrelated '{absent}' field: {v}");
+        }
     }
 
     #[test]
