@@ -591,6 +591,18 @@ pub fn install_patches(exe_or_shortcut: &Path, patch_dir: &Path) -> Result<Vec<S
                     .with_context(|| format!("backing up {} before first install", live_pak.display()))?;
             }
 
+            // Defensive: if a previous install crashed mid-merge, a `.risenlab-stageN` temp
+            // file from that run could still be sitting in the real game folder — clear it
+            // before starting fresh so they don't silently accumulate there.
+            for entry in fs::read_dir(&dest_group)? {
+                let path = entry?.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with(&format!("{stem}.pak.risenlab-stage")) {
+                        fs::remove_file(&path).ok();
+                    }
+                }
+            }
+
             let mut current_base_path = backup_path.clone();
             let mut stage_paths = Vec::new();
             for (i, patch_path) in patches.iter().enumerate() {
