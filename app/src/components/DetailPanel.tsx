@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
 import type { LibraryEntry, ReviewStatus, TextureMeta } from "../lib/types";
-import { readTextureDataUrl, textureMeta } from "../lib/api";
+import { exportTexture, readTextureDataUrl, textureMeta } from "../lib/api";
 import { formatBytes } from "../lib/library";
 
 interface Props {
@@ -10,6 +10,11 @@ interface Props {
   lang: Lang;
   onRegenerate: (entry: LibraryEntry) => void;
   regenerating: boolean;
+  /** "Імпортувати": brings an externally-edited image in as this texture's `edited/` variant.
+   * Lifted to the parent (like `onRegenerate`) because a successful import needs the same
+   * "just landed in review" bookkeeping (status map, queue-changed ping, notice toast). */
+  onImport: (entry: LibraryEntry) => void;
+  importing: boolean;
   /** Set when this entry has ever been through AI enhancement (any status) — drives the
    * "Переглянути до/після" button below. `undefined`/absent = never touched. */
   reviewStatus?: ReviewStatus;
@@ -21,14 +26,31 @@ interface Props {
   onViewCompare: (entry: LibraryEntry) => void;
 }
 
-export default function DetailPanel({ entry, lang, onRegenerate, regenerating, reviewStatus, onViewCompare }: Props) {
+export default function DetailPanel({ entry, lang, onRegenerate, regenerating, onImport, importing, reviewStatus, onViewCompare }: Props) {
   const s = t(lang);
   const [preview, setPreview] = useState<string | null>(null);
   const [meta, setMeta] = useState<TextureMeta | null>(null);
+  const [exporting, setExporting] = useState(false);
+  const [exportMessage, setExportMessage] = useState<string | null>(null);
+
+  async function handleExport() {
+    if (!entry) return;
+    setExporting(true);
+    setExportMessage(null);
+    try {
+      const path = await exportTexture(entry.pngRel);
+      setExportMessage(path ? (lang === "uk" ? `Збережено: ${path}` : `Saved: ${path}`) : null);
+    } catch (e) {
+      setExportMessage(String(e));
+    } finally {
+      setExporting(false);
+    }
+  }
 
   useEffect(() => {
     setPreview(null);
     setMeta(null);
+    setExportMessage(null);
     if (!entry) return;
     let cancelled = false;
     readTextureDataUrl(entry.pngRel).then((url) => {
@@ -104,19 +126,29 @@ export default function DetailPanel({ entry, lang, onRegenerate, regenerating, r
           </div>
 
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-            <div
+            <button
+              disabled={exporting}
+              onClick={handleExport}
+              title={
+                lang === "uk"
+                  ? "Зберегти поточний варіант (покращений, якщо є, інакше оригінал) у файл PNG — щоб відкрити в зовнішньому редакторі."
+                  : "Save the current variant (enhanced if there is one, otherwise the original) to a PNG file — to open in an external editor."
+              }
               style={{
                 flex: 1,
                 textAlign: "center",
                 padding: 10,
                 borderRadius: 9,
                 background: "var(--accent)",
+                border: "none",
                 font: "600 12.5px system-ui",
                 color: "#fff",
+                opacity: exporting ? 0.6 : 1,
+                cursor: exporting ? "wait" : "pointer",
               }}
             >
-              {s.btnExtract}
-            </div>
+              {exporting ? s.loading : s.btnExtract}
+            </button>
             <button
               disabled={regenerating}
               onClick={() => onRegenerate(entry)}
@@ -135,6 +167,36 @@ export default function DetailPanel({ entry, lang, onRegenerate, regenerating, r
               {regenerating ? s.loading : s.btnRegenerate}
             </button>
           </div>
+          <button
+            disabled={importing}
+            onClick={() => onImport(entry)}
+            title={
+              lang === "uk"
+                ? "Взяти зображення, відредаговане назовні (Photoshop/GIMP/…), і поставити його як покращений варіант — піде у звичайну чергу рев'ю."
+                : "Bring in an image edited outside the app (Photoshop/GIMP/…) and set it as the enhanced variant — enters the normal review queue."
+            }
+            style={{
+              width: "100%",
+              marginTop: 8,
+              padding: 10,
+              borderRadius: 9,
+              background: "var(--bg2)",
+              border: "1px solid var(--border)",
+              font: "600 12.5px system-ui",
+              color: importing ? "var(--text-faint)" : "var(--text)",
+              opacity: importing ? 0.6 : 1,
+              cursor: importing ? "wait" : "pointer",
+            }}
+          >
+            {importing
+              ? s.loading
+              : lang === "uk"
+                ? "📥 Імпортувати відредаговане"
+                : "📥 Import edited version"}
+          </button>
+          {exportMessage ? (
+            <div style={{ marginTop: 8, fontSize: 11, color: "var(--text-faint)", wordBreak: "break-all" }}>{exportMessage}</div>
+          ) : null}
           {reviewStatus && reviewStatus !== "rejected" ? (
             <button
               onClick={() => onViewCompare(entry)}

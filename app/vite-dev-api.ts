@@ -411,6 +411,37 @@ export function risenlabDevApi(): Plugin {
             }
             return sendJson(res, 200, { ok: true });
           }
+          if (url.pathname === "/api/export-texture" && req.method === "POST") {
+            const { outputDir, pngRel } = await readJsonBody(req);
+            const fileName = path.basename(pngRel);
+            const dest = await runPowerShellDialog(
+              `Add-Type -AssemblyName System.Windows.Forms | Out-Null
+               $f = New-Object System.Windows.Forms.SaveFileDialog
+               $f.FileName = '${fileName.replace(/'/g, "''")}'
+               $f.Filter = 'PNG|*.png'
+               if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }`,
+            );
+            if (!dest) return sendJson(res, 200, { path: null });
+            await runCli(["export-texture", outputDir, pngRel, dest]);
+            return sendJson(res, 200, { path: dest });
+          }
+          if (url.pathname === "/api/import-edited-texture" && req.method === "POST") {
+            const { outputDir, pngRel } = await readJsonBody(req);
+            const src = await runPowerShellDialog(
+              `Add-Type -AssemblyName System.Windows.Forms | Out-Null
+               $f = New-Object System.Windows.Forms.OpenFileDialog
+               $f.Filter = 'Image|*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tga|All files|*.*'
+               if ($f.ShowDialog() -eq 'OK') { Write-Output $f.FileName }`,
+            );
+            if (!src) return sendJson(res, 200, { path: null });
+            await runCli(["import-texture", outputDir, pngRel, src]);
+            const status = await loadReviewStatus(outputDir);
+            if (pngRel in status) {
+              delete status[pngRel];
+              await saveReviewStatus(outputDir, status);
+            }
+            return sendJson(res, 200, { path: src });
+          }
           if (url.pathname === "/api/review-queue" && req.method === "GET") {
             const outputDir = url.searchParams.get("outputDir")!;
             const [edited, status] = await Promise.all([listEditedPngs(outputDir), loadReviewStatus(outputDir)]);

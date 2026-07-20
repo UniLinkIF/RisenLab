@@ -6,14 +6,16 @@
 //! since they need a running Tauri app to exercise directly.
 
 mod logic;
+mod remote;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::Serialize;
-use tauri::{Manager, State};
+use tauri::{AppHandle, Manager, State};
 
 use logic::AppSettings;
+use remote::RemoteState;
 use risenlab::batch;
 
 struct AppState {
@@ -39,6 +41,18 @@ fn pick_game_path() -> Option<String> {
         .add_filter("Risen.exe or shortcut", &["exe", "lnk"])
         .pick_file()
         .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Was missing entirely: the frontend's `pickFolder()` never branched on `isTauri()` (unlike
+/// `pickGamePath`) and always called the dev-bridge's `/api/pick-folder` HTTP route — which
+/// doesn't exist in the packaged app at all (no dev server, and the local Tauri UI doesn't talk
+/// to the remote-access HTTP server either). Every "Огляд…" button next to the output/patch/
+/// review-html paths in Settings was silently broken in the packaged .exe. Real bug, found while
+/// building the texture export/import feature below (owner report, 2026-07-20: "проєкт має
+/// бути готовим... я хочу могти вже ділитись").
+#[tauri::command]
+fn pick_folder() -> Option<String> {
+    rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().into_owned())
 }
 
 #[derive(Serialize)]
@@ -289,15 +303,64 @@ fn actor_skinned_mesh(archive_path: String, entry_path: String) -> Result<risenl
     batch::actor_skinned_mesh(&PathBuf::from(archive_path), &entry_path).map_err(|e| e.to_string())
 }
 
+/// Builds a real `risenlab::ai::AiConfig` from the packaged app's OWN settings — never from
+/// `ai::load_config()`, which only ever reads `Desktop\RisenLab-Project\settings.json` (the
+/// CLI/dev-bridge's own settings file, a DIFFERENT location than this app's real settings, see
+/// `batch::regenerate`'s doc comment for the full story). `RISENLAB_AI_KEY` still overrides the
+/// key, same as the CLI, for one-off testing without touching the saved settings.
+fn resolve_ai_config(settings: &logic::AppSettings) -> Option<risenlab::ai::AiConfig> {
+    let env_key = std::env::var("RISENLAB_AI_KEY").ok().filter(|k| !k.trim().is_empty());
+    let key = env_key.as_deref().or(settings.ai_api_key.as_deref()).unwrap_or("");
+    risenlab::ai::config_from_parts(
+        settings.ai_provider.as_deref(),
+        key,
+        settings.ai_model.as_deref(),
+        settings.ai_creativity,
+        settings.ai_regenerate.unwrap_or(false),
+    )
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn regenerate_texture(state: State<AppState>, png_rel: String, scale: Option<u32>) -> Result<(), String> {
-    let out_dir = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
-    batch::regenerate(&out_dir, &png_rel, scale.unwrap_or(0), risenlab::batch::RegenEngine::Auto)
+    let (out_dir, ai_config) = {
+        let s = state.settings.lock().unwrap();
+        (PathBuf::from(s.output_dir.clone()), resolve_ai_config(&s))
+    };
+    batch::regenerate(&out_dir, &png_rel, scale.unwrap_or(0), risenlab::batch::RegenEngine::Auto, ai_config.as_ref())
         .map_err(|e| e.to_string())?;
     // Clear any leftover approve/reject decision from a PREVIOUS regenerate (see
     // logic::reset_review_status doc comment) — otherwise this brand-new result stays invisible
     // in the Review screen, reading as "regenerate did nothing" when it actually worked fine.
     logic::reset_review_status(&logic::review_status_path(&out_dir), &png_rel).map_err(|e| e.to_string())
+}
+
+/// "Витягнути": opens a native Save dialog defaulting to the texture's own filename, then
+/// copies its current variant (edited/ if reviewed, otherwise the original) there byte-for-byte
+/// — ready to open in an external editor. Returns the saved path, or `None` if cancelled.
+#[tauri::command(rename_all = "camelCase")]
+fn export_texture(state: State<AppState>, png_rel: String) -> Result<Option<String>, String> {
+    let out_dir = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
+    let file_name = PathBuf::from(&png_rel).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "texture.png".to_string());
+    let Some(dest) = rfd::FileDialog::new().set_file_name(&file_name).add_filter("PNG", &["png"]).save_file() else {
+        return Ok(None);
+    };
+    batch::export_texture_to(&out_dir, &png_rel, &dest).map_err(|e| e.to_string())?;
+    Ok(Some(dest.to_string_lossy().into_owned()))
+}
+
+/// The other half: opens a native Open dialog, brings the picked image back in as the texture's
+/// `edited/` variant (same slot AI output lands in — goes through the normal review queue from
+/// there), and clears any stale review decision the same way a fresh AI regenerate does.
+/// Returns the source path picked, or `None` if cancelled.
+#[tauri::command(rename_all = "camelCase")]
+fn import_edited_texture(state: State<AppState>, png_rel: String) -> Result<Option<String>, String> {
+    let out_dir = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
+    let Some(src) = rfd::FileDialog::new().add_filter("Image", &["png", "jpg", "jpeg", "webp", "bmp", "tga"]).pick_file() else {
+        return Ok(None);
+    };
+    batch::import_edited_texture(&out_dir, &png_rel, &src).map_err(|e| e.to_string())?;
+    logic::reset_review_status(&logic::review_status_path(&out_dir), &png_rel).map_err(|e| e.to_string())?;
+    Ok(Some(src.to_string_lossy().into_owned()))
 }
 
 #[derive(Serialize)]
@@ -493,6 +556,24 @@ fn get_stats(state: State<AppState>) -> AppStatsDto {
     }
 }
 
+/// Starts the remote-access HTTP server + `cloudflared` tunnel (see `remote.rs`). Idempotent —
+/// calling it while already running just returns the current status instead of starting a
+/// second server.
+#[tauri::command(rename_all = "camelCase")]
+fn start_remote_access(app: AppHandle, state: State<RemoteState>) -> Result<remote::RemoteStatusDto, String> {
+    remote::start(app, &state)
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn stop_remote_access(state: State<RemoteState>) {
+    remote::stop(&state);
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn get_remote_status(state: State<RemoteState>) -> remote::RemoteStatusDto {
+    remote::status(&state)
+}
+
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
@@ -507,12 +588,14 @@ fn main() {
                 settings: Mutex::new(settings),
                 settings_path,
             });
+            app.manage(RemoteState::new());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_settings,
             save_settings,
             pick_game_path,
+            pick_folder,
             check_game,
             list_library,
             read_texture_data_url,
@@ -528,6 +611,8 @@ fn main() {
             motion_tracks,
             actor_skinned_mesh,
             regenerate_texture,
+            export_texture,
+            import_edited_texture,
             review_queue,
             set_review_status,
             build_patches,
@@ -537,6 +622,9 @@ fn main() {
             export_motion_patch_batch,
             export_double_rate_motion_patch,
             get_stats,
+            start_remote_access,
+            stop_remote_access,
+            get_remote_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running RisenLab UI");

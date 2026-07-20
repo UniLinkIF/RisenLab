@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
 import type { LibraryEntry, ReviewStatus } from "../lib/types";
-import { listLibrary, regenerateTexture, reviewQueue } from "../lib/api";
+import { importEditedTexture, listLibrary, regenerateTexture, reviewQueue } from "../lib/api";
 import { buildFolderTree, countProcessed, filterEntries, filterByTreeKey, isFlat2DOnly } from "../lib/library";
 import FolderTree from "../components/FolderTree";
 import TextureGrid from "../components/TextureGrid";
@@ -45,6 +45,7 @@ export default function Library({ lang, onRegenerated, onQueueChanged, onOpenRev
   const [selected, setSelected] = useState<LibraryEntry | null>(null);
   const [statusByPngRel, setStatusByPngRel] = useState<Map<string, ReviewStatus>>(new Map());
   const [regenerating, setRegenerating] = useState(false);
+  const [importing, setImporting] = useState(false);
   const [batch, setBatch] = useState<BatchProgress | null>(null);
   const batchCancelled = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -83,6 +84,24 @@ export default function Library({ lang, onRegenerated, onQueueChanged, onOpenRev
       setError(String(e));
     } finally {
       setRegenerating(false);
+    }
+  }
+
+  // "Витягнути" → externally edit → this: same post-landing bookkeeping as a real AI
+  // regenerate (status flips to pending, queue-changed ping, notice toast) since the imported
+  // image lands in the exact same `edited/` slot and goes through the same review queue.
+  async function handleImport(entry: LibraryEntry) {
+    setImporting(true);
+    try {
+      const path = await importEditedTexture(entry.pngRel);
+      if (!path) return; // user cancelled the file picker
+      setStatusByPngRel((prev) => new Map(prev).set(entry.pngRel, "pending"));
+      onQueueChanged();
+      setGenNotice(entry);
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setImporting(false);
     }
   }
 
@@ -241,6 +260,8 @@ export default function Library({ lang, onRegenerated, onQueueChanged, onOpenRev
         lang={lang}
         onRegenerate={handleRegenerate}
         regenerating={regenerating}
+        onImport={handleImport}
+        importing={importing}
         reviewStatus={selected ? statusByPngRel.get(selected.pngRel) : undefined}
         onViewCompare={onRegenerated}
       />

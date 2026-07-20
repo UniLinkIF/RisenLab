@@ -56,34 +56,35 @@ pub fn settings_json_path() -> PathBuf {
     Path::new(&home).join("Desktop").join("RisenLab-Project").join("settings.json")
 }
 
+/// Builds an `AiConfig` from already-typed field values (defaulting/clamping rules shared with
+/// `parse_settings_ai` below) — the packaged Tauri app's settings are ALREADY a parsed
+/// `AppSettings` struct (`app/src-tauri/src/logic.rs`), not JSON text, so it has no reason to
+/// round-trip through `serde_json::Value` just to reach this same logic. An empty/whitespace key
+/// counts as "not configured", same as the JSON path.
+pub fn config_from_parts(provider: Option<&str>, api_key: &str, model: Option<&str>, creativity: Option<f32>, regenerate: bool) -> Option<AiConfig> {
+    let key = api_key.trim().to_string();
+    if key.is_empty() {
+        return None;
+    }
+    let model = model.map(str::trim).filter(|m| !m.is_empty()).unwrap_or(DEFAULT_MODEL).to_string();
+    let provider = provider
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .unwrap_or_else(|| "replicate".to_string());
+    let creativity = creativity.map(|c| c.clamp(0.1, 0.9)).unwrap_or(0.6);
+    Some(AiConfig { provider, api_key: key, model, creativity, regenerate })
+}
+
 /// Extracts `(api_key, model)` from the settings JSON text. Separated from file I/O so the
 /// parsing is unit-testable. An empty/whitespace key counts as "not configured".
 pub fn parse_settings_ai(json: &str) -> Option<AiConfig> {
     let value: serde_json::Value = serde_json::from_str(json).ok()?;
-    let key = value.get("aiApiKey")?.as_str()?.trim().to_string();
-    if key.is_empty() {
-        return None;
-    }
-    let model = value
-        .get("aiModel")
-        .and_then(|m| m.as_str())
-        .map(str::trim)
-        .filter(|m| !m.is_empty())
-        .unwrap_or(DEFAULT_MODEL)
-        .to_string();
-    let provider = value
-        .get("aiProvider")
-        .and_then(|p| p.as_str())
-        .map(|p| p.trim().to_lowercase())
-        .filter(|p| !p.is_empty())
-        .unwrap_or_else(|| "replicate".to_string());
-    let creativity = value
-        .get("aiCreativity")
-        .and_then(|c| c.as_f64())
-        .map(|c| (c as f32).clamp(0.1, 0.9))
-        .unwrap_or(0.6);
+    let key = value.get("aiApiKey")?.as_str()?;
+    let model = value.get("aiModel").and_then(|m| m.as_str());
+    let provider = value.get("aiProvider").and_then(|p| p.as_str());
+    let creativity = value.get("aiCreativity").and_then(|c| c.as_f64()).map(|c| c as f32);
     let regenerate = value.get("aiRegenerate").and_then(|r| r.as_bool()).unwrap_or(false);
-    Some(AiConfig { provider, api_key: key, model, creativity, regenerate })
+    config_from_parts(provider, key, model, creativity, regenerate)
 }
 
 /// Reads AI config: `RISENLAB_AI_KEY` env var wins (model from settings or default), then the
@@ -615,6 +616,32 @@ mod tests {
         assert!(parse_settings_ai(r#"{"aiApiKey": ""}"#).is_none());
         assert!(parse_settings_ai(r#"{"aiApiKey": "   "}"#).is_none());
         assert!(parse_settings_ai("not json").is_none());
+    }
+
+    #[test]
+    fn config_from_parts_matches_parse_settings_ai_on_the_same_values() {
+        // The real fix for "яку б модель я не вибирав - генерації не відбувається" (2026-07-20):
+        // the packaged Tauri app's real settings are an already-parsed `AppSettings` struct, not
+        // JSON text — this must produce IDENTICAL `AiConfig`s to the JSON path for the same
+        // logical values, or the packaged app and the CLI/dev-bridge would silently disagree on
+        // what "configured" means.
+        let from_json = parse_settings_ai(r#"{"aiApiKey": "r8_abc", "aiModel": "stability-ai/sdxl", "aiProvider": "Stability", "aiCreativity": 0.85, "aiRegenerate": true}"#).unwrap();
+        let from_parts = config_from_parts(Some("Stability"), "r8_abc", Some("stability-ai/sdxl"), Some(0.85), true).unwrap();
+        assert_eq!(from_json, from_parts);
+    }
+
+    #[test]
+    fn config_from_parts_treats_missing_or_empty_key_as_unconfigured() {
+        assert!(config_from_parts(None, "", None, None, false).is_none());
+        assert!(config_from_parts(None, "   ", None, None, false).is_none());
+    }
+
+    #[test]
+    fn config_from_parts_defaults_model_and_provider_when_absent() {
+        let cfg = config_from_parts(None, "r8_abc", None, None, false).unwrap();
+        assert_eq!(cfg.model, DEFAULT_MODEL);
+        assert_eq!(cfg.provider, "replicate");
+        assert_eq!(cfg.creativity, 0.6);
     }
 
     #[test]

@@ -1016,11 +1016,22 @@ impl std::str::FromStr for RegenEngine {
 }
 
 /// Regenerates an already-extracted PNG into the `edited/` sibling directory, ready for
-/// review/`apply`. Engine selection (see `RegenEngine`): with a configured API key
-/// (settings.json `aiApiKey` / env `RISENLAB_AI_KEY`) photo-like textures go through the
-/// real AI enhancer (`ai::enhance_png`); normal/specular data maps and unconfigured installs
-/// use the local Lanczos3 upscale that was this function's original behavior.
-pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32, engine: RegenEngine) -> Result<PathBuf> {
+/// review/`apply`. Engine selection (see `RegenEngine`): with a configured API key, photo-like
+/// textures go through the real AI enhancer (`ai::enhance_png`); normal/specular data maps and
+/// unconfigured installs use the local Lanczos3 upscale that was this function's original
+/// behavior.
+///
+/// `ai_config` is resolved by the CALLER, not read from a fixed path in here — this function
+/// used to call `ai::load_config()` internally, which only ever reads `Desktop\RisenLab-
+/// Project\settings.json` (the CLI/dev-bridge's own settings location). The packaged Tauri app
+/// keeps its REAL settings somewhere else entirely (`app.path().app_config_dir()`, e.g.
+/// `%APPDATA%\com.risenlab.app\settings.json`), so no API key/model choice made in the app's own
+/// Settings screen ever reached here — every regenerate silently fell back to local Lanczos
+/// regardless of which model was picked (real owner report, 2026-07-19/20: "яку б модель я не
+/// вибирав - генерації не відбувається"). Each caller now resolves its OWN real config source
+/// (the CLI still uses `ai::load_config()`; the Tauri command builds one from its own already-
+/// loaded `AppState.settings` via `ai::config_from_parts`) and passes it in explicitly.
+pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32, engine: RegenEngine, ai_config: Option<&crate::ai::AiConfig>) -> Result<PathBuf> {
     let src = out_dir.join(png_rel);
     let dest = out_dir.join("edited").join(png_rel);
     if let Some(parent) = dest.parent() {
@@ -1048,8 +1059,8 @@ pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32, engine: RegenEngine
         RegenEngine::Ai | RegenEngine::Auto => !crate::ai::is_data_map(png_rel),
     };
     if want_ai {
-        match crate::ai::load_config() {
-            Some(cfg) => match crate::ai::enhance_png(&cfg, &src, png_rel, scale) {
+        match ai_config {
+            Some(cfg) => match crate::ai::enhance_png(cfg, &src, png_rel, scale) {
                 Ok(bytes) => {
                     // Provider may answer in png/jpeg/webp — the pipeline stays PNG.
                     let img = image::load_from_memory(&bytes).context("decoding AI-enhanced image")?;
@@ -1085,6 +1096,43 @@ pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32, engine: RegenEngine
     resized
         .save(&dest)
         .with_context(|| format!("writing {}", dest.display()))?;
+    Ok(dest)
+}
+
+/// Copies a library texture's real PNG bytes (the CURRENT variant — `edited/<png_rel>` if one
+/// exists, otherwise the original extracted PNG) to an arbitrary destination path picked by the
+/// user — "Витягнути" (owner request, 2026-07-20: the button existed in the UI but did nothing;
+/// this is the real implementation). No decoding/re-encoding: whatever bytes are on disk are
+/// what the user gets, byte-for-byte, ready to open in an external editor.
+pub fn export_texture_to(out_dir: &Path, png_rel: &str, dest: &Path) -> Result<()> {
+    let edited = out_dir.join("edited").join(png_rel);
+    let src = if edited.is_file() { edited } else { out_dir.join(png_rel) };
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::copy(&src, dest).with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
+    Ok(())
+}
+
+/// The other half of "Витягнути": brings an externally-edited image back in as the texture's
+/// `edited/` variant — the same slot `regenerate`'s AI/Lanczos output lands in, so it goes
+/// through the normal review queue (approve → patch → install) exactly like a real AI result
+/// would. Re-encodes through `image` (rather than a raw byte copy) so a source PNG/JPEG/WEBP/
+/// whatever the user's editor exported all land as a real, valid PNG regardless of what they
+/// saved from — the one thing this pipeline requires. Resolution is NOT enforced to match the
+/// original: a deliberate upscale/replacement is a legitimate reason to import, not an error.
+pub fn import_edited_texture(out_dir: &Path, png_rel: &str, src: &Path) -> Result<PathBuf> {
+    let dest = out_dir.join("edited").join(png_rel);
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let img = image::ImageReader::open(src)
+        .with_context(|| format!("opening {}", src.display()))?
+        .with_guessed_format()
+        .with_context(|| format!("reading {}", src.display()))?
+        .decode()
+        .with_context(|| format!("decoding {} as an image", src.display()))?;
+    img.save(&dest).with_context(|| format!("writing {}", dest.display()))?;
     Ok(dest)
 }
 
@@ -1607,7 +1655,7 @@ mod tests {
         let img = image::RgbaImage::from_pixel(8, 4, image::Rgba([10, 20, 30, 255]));
         img.save(&src).unwrap();
 
-        let dest = regenerate(&out_dir, png_rel, 2, RegenEngine::Lanczos).unwrap();
+        let dest = regenerate(&out_dir, png_rel, 2, RegenEngine::Lanczos, None).unwrap();
         assert_eq!(dest, out_dir.join("edited").join(png_rel));
         let decoded = image::ImageReader::open(&dest).unwrap().decode().unwrap();
         assert_eq!(decoded.width(), 16);
@@ -1630,12 +1678,12 @@ mod tests {
             .save(out_dir.join(large_rel))
             .unwrap();
 
-        let small = image::ImageReader::open(regenerate(&out_dir, small_rel, 0, RegenEngine::Lanczos).unwrap())
+        let small = image::ImageReader::open(regenerate(&out_dir, small_rel, 0, RegenEngine::Lanczos, None).unwrap())
             .unwrap()
             .decode()
             .unwrap();
         assert_eq!((small.width(), small.height()), (256, 128), "≤256px → 4x");
-        let large = image::ImageReader::open(regenerate(&out_dir, large_rel, 0, RegenEngine::Lanczos).unwrap())
+        let large = image::ImageReader::open(regenerate(&out_dir, large_rel, 0, RegenEngine::Lanczos, None).unwrap())
             .unwrap()
             .decode()
             .unwrap();
@@ -1647,7 +1695,72 @@ mod tests {
     #[test]
     fn regenerate_errors_when_source_png_is_missing() {
         let out_dir = temp_dir("regenerate_missing");
-        assert!(regenerate(&out_dir, "nope.png", 2, RegenEngine::Lanczos).is_err());
+        assert!(regenerate(&out_dir, "nope.png", 2, RegenEngine::Lanczos, None).is_err());
+        fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn export_texture_to_prefers_the_edited_variant_over_the_original() {
+        let out_dir = temp_dir("export_prefers_edited");
+        let png_rel = "compiled/images/Level/rock.png";
+        let original = out_dir.join(png_rel);
+        fs::create_dir_all(original.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([1, 1, 1, 255])).save(&original).unwrap();
+        let edited = out_dir.join("edited").join(png_rel);
+        fs::create_dir_all(edited.parent().unwrap()).unwrap();
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([9, 9, 9, 255])).save(&edited).unwrap();
+
+        let dest = out_dir.join("exported.png");
+        export_texture_to(&out_dir, png_rel, &dest).unwrap();
+        let decoded = image::open(&dest).unwrap().to_rgba8();
+        assert_eq!(decoded.get_pixel(0, 0).0, [9, 9, 9, 255], "should export the edited variant, not the original");
+
+        fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn export_texture_to_falls_back_to_the_original_when_no_edited_variant_exists() {
+        let out_dir = temp_dir("export_falls_back");
+        let png_rel = "rock.png";
+        image::RgbaImage::from_pixel(4, 4, image::Rgba([5, 5, 5, 255])).save(out_dir.join(png_rel)).unwrap();
+
+        let dest = out_dir.join("exported.png");
+        export_texture_to(&out_dir, png_rel, &dest).unwrap();
+        let decoded = image::open(&dest).unwrap().to_rgba8();
+        assert_eq!(decoded.get_pixel(0, 0).0, [5, 5, 5, 255]);
+
+        fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn import_edited_texture_writes_into_the_edited_dir_as_a_real_png() {
+        let out_dir = temp_dir("import_edited");
+        let png_rel = "compiled/images/Level/rock.png";
+        // The source the user picked can be any image format/location — a JPEG here (no alpha
+        // channel, same as a real export from an external editor), to prove it gets re-encoded
+        // to a real PNG rather than just byte-copied under a renamed path.
+        let src = out_dir.join("external_edit.jpg");
+        image::RgbImage::from_pixel(6, 6, image::Rgb([200, 100, 50]))
+            .save_with_format(&src, image::ImageFormat::Jpeg)
+            .unwrap();
+
+        let dest = import_edited_texture(&out_dir, png_rel, &src).unwrap();
+        assert_eq!(dest, out_dir.join("edited").join(png_rel));
+        let decoded = image::open(&dest).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (6, 6));
+
+        fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn import_edited_texture_errors_on_a_non_image_file_instead_of_silently_writing_garbage() {
+        let out_dir = temp_dir("import_not_an_image");
+        let src = out_dir.join("notes.txt");
+        fs::create_dir_all(&out_dir).unwrap();
+        fs::write(&src, b"this is not an image").unwrap();
+
+        assert!(import_edited_texture(&out_dir, "rock.png", &src).is_err());
+
         fs::remove_dir_all(&out_dir).ok();
     }
 

@@ -135,3 +135,14 @@ export interface AppStats {
   modelsAvailable: number;
   appVersion: string;
 }
+
+/** See `app/src-tauri/src/remote.rs` — a colleague opens `tunnelUrl` with `?token=<token>`
+ * appended to reach the app remotely. `tunnelUrl` starts `null` right after starting (cloudflare
+ * takes a couple seconds to hand one out) — poll `getRemoteStatus` until it appears. */
+export interface RemoteStatus {
+  running: boolean;
+  port: number | null;
+  token: string | null;
+  tunnelUrl: string | null;
+  cloudflaredAvailable: boolean;
+}

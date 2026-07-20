@@ -1,13 +1,18 @@
-// Thin wrapper over the backend commands. Two real backends, no fabricated/mock data in
-// either:
+// Thin wrapper over the backend commands. Three real backends, no fabricated/mock data in any:
 //  - Inside the real Tauri app (`isTauri()` true): calls the Rust commands in
 //    app/src-tauri/src/main.rs directly.
 //  - In a plain browser dev preview (`npm run dev`, e.g. while the Tauri shell can't be
 //    compiled in this environment): calls the local dev-only HTTP API (vite-dev-api.ts),
 //    which shells out to the real `risenlab.exe` CLI and does real filesystem work — same
 //    game, same files, same picker dialogs, nothing invented.
-import type { ActorEntry, AppSettings, AppStats, BoneMotion, GameCheckResult, LibraryEntry, MaterialTextureRefs, MeshEntry, MotionEntry, ReviewItem, ReviewStatus, SkeletonNode, SkinnedMeshData, TextureMeta } from "./types";
+//  - A remote browser tab opened via the "🌐 Віддалений доступ" tunnel (see
+//    app/src-tauri/src/remote.rs): also takes the non-Tauri branch below (no
+//    `window.__TAURI_INTERNALS__` there either), hitting the SAME `/api/*` shape served by the
+//    packaged app's own embedded HTTP server instead of the dev CLI bridge — the only
+//    difference is every request needs the remote token attached (see `remoteToken.ts`).
+import type { ActorEntry, AppSettings, AppStats, BoneMotion, GameCheckResult, LibraryEntry, MaterialTextureRefs, MeshEntry, MotionEntry, RemoteStatus, ReviewItem, ReviewStatus, SkeletonNode, SkinnedMeshData, TextureMeta } from "./types";
 import { memoizeAsync } from "./cache";
+import { getRemoteToken } from "./remoteToken";
 
 export function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -18,8 +23,21 @@ async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T
   return mod.invoke<T>(cmd, args);
 }
 
+/** Appends `?token=`/`&token=` when a remote-access token is present (no-op locally/in dev —
+ * neither ever has one). A query param, not a header, on purpose: several call sites below hand
+ * a bare URL string to something that fetches it itself (an `<img>`/CSS `background` src, or
+ * three.js's `OBJLoader`) — none of those can attach a custom header, but a plain browser GET
+ * always carries the URL's own query string, and the Rust server accepts the token either way
+ * (see `remote.rs`'s `extract_token`). Used uniformly (even for JS `fetch()` calls that COULD
+ * use a header) so every `/api/*` URL this file ever builds is auth'd the same one way. */
+function withToken(path: string): string {
+  const token = getRemoteToken();
+  if (!token) return path;
+  return `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(token)}`;
+}
+
 async function api<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`/api/${path}`, init);
+  const res = await fetch(`/api/${withToken(path)}`, init);
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
     throw new Error(body.error ?? `${path} failed (${res.status})`);
@@ -28,7 +46,7 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 function postJson(path: string, body: unknown): Promise<Response> {
-  return fetch(`/api/${path}`, {
+  return fetch(`/api/${withToken(path)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
@@ -36,6 +54,13 @@ function postJson(path: string, body: unknown): Promise<Response> {
     if (!res.ok) throw new Error(`${path} failed (${res.status})`);
     return res;
   });
+}
+
+/** For the handful of call sites below that hand out a bare `/api/...` URL string for something
+ * ELSE to fetch (image `src`, `OBJLoader.load`) rather than fetching it themselves — same token
+ * rule as `api()`/`postJson()`, see `withToken`. */
+function apiUrl(path: string): string {
+  return `/api/${withToken(path)}`;
 }
 
 export async function getSettings(): Promise<AppSettings> {
@@ -55,6 +80,10 @@ export async function pickGamePath(): Promise<string | null> {
 }
 
 export async function pickFolder(): Promise<string | null> {
+  // Was missing the isTauri() branch entirely (real bug, found 2026-07-20 — see the matching
+  // comment on the `pick_folder` Tauri command): always hit the dev-bridge's HTTP route, which
+  // doesn't exist in the packaged app, silently breaking every "Огляд…" folder button in it.
+  if (isTauri()) return invoke<string | null>("pick_folder");
   const { path } = await api<{ path: string | null }>("pick-folder", { method: "POST" });
   return path;
 }
@@ -86,7 +115,7 @@ export async function meshObjUrl(archivePath: string, entryPath: string): Promis
       const text = await invoke<string>("mesh_to_obj", { archivePath, entryPath });
       return URL.createObjectURL(new Blob([text], { type: "text/plain" }));
     }
-    return `/api/mesh-obj?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}`;
+    return apiUrl(`mesh-obj?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}`);
   });
 }
 
@@ -105,7 +134,7 @@ export async function actorObjUrl(archivePath: string, entryPath: string): Promi
       const text = await invoke<string>("actor_to_obj", { archivePath, entryPath });
       return URL.createObjectURL(new Blob([text], { type: "text/plain" }));
     }
-    return `/api/actor-obj?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}`;
+    return apiUrl(`actor-obj?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}`);
   });
 }
 
@@ -197,7 +226,7 @@ export async function readTextureDataUrl(pngRel: string): Promise<string> {
   return memoizeAsync(textureUrlCache, pngRel, async () => {
     if (isTauri()) return invoke<string>("read_texture_data_url", { pngRel });
     const settings = await getSettings();
-    return `/api/texture?outputDir=${encodeURIComponent(settings.outputDir)}&pngRel=${encodeURIComponent(pngRel)}`;
+    return apiUrl(`texture?outputDir=${encodeURIComponent(settings.outputDir)}&pngRel=${encodeURIComponent(pngRel)}`);
   });
 }
 
@@ -205,7 +234,7 @@ export async function readEditedDataUrl(pngRel: string): Promise<string> {
   return memoizeAsync(editedUrlCache, pngRel, async () => {
     if (isTauri()) return invoke<string>("read_edited_data_url", { pngRel });
     const settings = await getSettings();
-    return `/api/texture?outputDir=${encodeURIComponent(settings.outputDir)}&pngRel=${encodeURIComponent(pngRel)}&edited=1`;
+    return apiUrl(`texture?outputDir=${encodeURIComponent(settings.outputDir)}&pngRel=${encodeURIComponent(pngRel)}&edited=1`);
   });
 }
 
@@ -222,6 +251,36 @@ export async function regenerateTexture(pngRel: string, scale = 0): Promise<void
   if (isTauri()) return invoke("regenerate_texture", { pngRel, scale });
   const settings = await getSettings();
   await postJson("regenerate", { outputDir: settings.outputDir, pngRel, scale });
+}
+
+/** "Витягнути": saves the texture's current variant (edited/ if reviewed, else the original) to
+ * a path the user picks via a native Save dialog. Returns the saved path, or `null` if
+ * cancelled. Not available remotely — see `remote.rs`. */
+export async function exportTexture(pngRel: string): Promise<string | null> {
+  if (isTauri()) return invoke<string | null>("export_texture", { pngRel });
+  const settings = await getSettings();
+  const { path } = await api<{ path: string | null }>("export-texture", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ outputDir: settings.outputDir, pngRel }),
+  });
+  return path;
+}
+
+/** The other half: lets the user pick an externally-edited image via a native Open dialog and
+ * brings it in as the texture's `edited/` variant — the same slot AI output lands in, so it
+ * enters the normal review queue from there. Returns the picked source path, or `null` if
+ * cancelled. Not available remotely — see `remote.rs`. */
+export async function importEditedTexture(pngRel: string): Promise<string | null> {
+  editedUrlCache.delete(pngRel); // the variant just changed — force a fresh read next time
+  if (isTauri()) return invoke<string | null>("import_edited_texture", { pngRel });
+  const settings = await getSettings();
+  const { path } = await api<{ path: string | null }>("import-edited-texture", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ outputDir: settings.outputDir, pngRel }),
+  });
+  return path;
 }
 
 export async function reviewQueue(): Promise<ReviewItem[]> {
@@ -314,4 +373,19 @@ export async function backupProject(): Promise<string> {
 export async function getStats(): Promise<AppStats> {
   if (isTauri()) return invoke<AppStats>("get_stats");
   return api<AppStats>("stats");
+}
+
+// Remote access (see app/src-tauri/src/remote.rs) — Tauri-only by nature: starting/stopping the
+// embedded server + cloudflared tunnel is a LOCAL desktop action, not something a remote browser
+// tab would ever call on itself. No dev-bridge equivalent (`npm run dev` has nothing to tunnel).
+export async function startRemoteAccess(): Promise<RemoteStatus> {
+  return invoke<RemoteStatus>("start_remote_access");
+}
+
+export async function stopRemoteAccess(): Promise<void> {
+  return invoke("stop_remote_access");
+}
+
+export async function getRemoteStatus(): Promise<RemoteStatus> {
+  return invoke<RemoteStatus>("get_remote_status");
 }

@@ -1,4 +1,4 @@
-use risenlab::{batch, content, dds, gamepath, pak, ximg};
+use risenlab::{ai, batch, content, dds, gamepath, pak, ximg};
 
 use std::path::PathBuf;
 
@@ -247,6 +247,20 @@ enum Commands {
         /// auto | lanczos | ai
         #[arg(default_value = "auto")]
         engine: String,
+    },
+    /// "Витягнути": copies a library texture's CURRENT variant (edited/ if one exists,
+    /// otherwise the original) to an arbitrary destination — for opening in an external editor.
+    ExportTexture {
+        out_dir: PathBuf,
+        png_rel: String,
+        dest: PathBuf,
+    },
+    /// The other half of "Витягнути": brings an externally-edited image back in as the
+    /// texture's edited/ variant, ready for the normal review queue.
+    ImportTexture {
+        out_dir: PathBuf,
+        png_rel: String,
+        src: PathBuf,
     },
 }
 
@@ -562,7 +576,15 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string(&meta)?);
         }
         Commands::Regenerate { out_dir, png_rel, scale, engine } => {
-            let dest = batch::regenerate(&out_dir, &png_rel, scale, engine.parse()?)?;
+            let dest = batch::regenerate(&out_dir, &png_rel, scale, engine.parse()?, ai::load_config().as_ref())?;
+            println!("Wrote {}", dest.display());
+        }
+        Commands::ExportTexture { out_dir, png_rel, dest } => {
+            batch::export_texture_to(&out_dir, &png_rel, &dest)?;
+            println!("Wrote {}", dest.display());
+        }
+        Commands::ImportTexture { out_dir, png_rel, src } => {
+            let dest = batch::import_edited_texture(&out_dir, &png_rel, &src)?;
             println!("Wrote {}", dest.display());
         }
     }
