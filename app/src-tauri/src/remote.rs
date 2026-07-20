@@ -81,8 +81,21 @@ pub struct RemoteStatusDto {
     pub cloudflared_available: bool,
 }
 
+/// Locates `cloudflared.exe`: bundled next to this binary first (the portable-exe CI build
+/// fetches it from Cloudflare's own official releases — see build-windows.yml — so a "just
+/// download the exe" user has it for free), falling back to bare `cloudflared` so a PATH install
+/// (the owner manually installing it, the documented fallback) still works. Same "next to this
+/// binary, then PATH" pattern as `content.rs::helper_exe_path()` for mimicry-helper.exe.
+fn cloudflared_path() -> PathBuf {
+    let next_to_exe = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("cloudflared.exe")));
+    match next_to_exe {
+        Some(p) if p.exists() => p,
+        _ => PathBuf::from("cloudflared"),
+    }
+}
+
 fn cloudflared_available() -> bool {
-    let mut cmd = Command::new("cloudflared");
+    let mut cmd = Command::new(cloudflared_path());
     cmd.arg("--version");
     risenlab::content::suppress_console_window(&mut cmd);
     cmd.output().is_ok()
@@ -191,7 +204,7 @@ enum StreamKind {
 }
 
 fn spawn_cloudflared(tunnel_url: Arc<Mutex<Option<String>>>) -> Option<Child> {
-    let mut cmd = Command::new("cloudflared");
+    let mut cmd = Command::new(cloudflared_path());
     cmd.args(["tunnel", "--url", &format!("http://127.0.0.1:{REMOTE_PORT}")])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

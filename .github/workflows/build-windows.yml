@@ -44,6 +44,37 @@ jobs:
         working-directory: app
         run: npx tauri build
 
+      # mimicry-helper.exe is a separate GPL-3.0 binary, deliberately its own repo/build so this
+      # crate never links GPL code (see src/content.rs) — but that meant a "just download the
+      # portable exe" user got a broken Models/Animations tab with no explanation (real incident,
+      # 2026-07-20: "mimicry-helper.exe not found at Desktop\mimicry-helper.exe"). Fetches the
+      # latest successful build from that sibling repo's own CI (public repo, same org) and drops
+      # it next to risenlab-ui.exe — content.rs's helper_exe_path() already checks "next to this
+      # binary" first, so no code change needed, just get the file into the same folder.
+      - name: Fetch mimicry-helper.exe from its own repo's CI
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          run_id=$(gh run list --repo UniLinkIF/mimicry-helper --workflow=build-and-test.yml --status=success --limit=1 --json databaseId --jq '.[0].databaseId')
+          if [ -z "$run_id" ]; then
+            echo "::error::No successful mimicry-helper build found — portable exe would ship without it"
+            exit 1
+          fi
+          gh run download "$run_id" --repo UniLinkIF/mimicry-helper -n mimicry-helper-exe -D app/src-tauri/target/release
+
+      # cloudflared (remote access's tunnel, see app/src-tauri/src/remote.rs) — official,
+      # permissively-licensed Cloudflare binary, fetched from their own GitHub releases at BUILD
+      # time (a reviewable CI step under this repo's own control), not downloaded at runtime on
+      # an end user's machine. Owner: "щоб людина реально скачала exe і більше нічого" — the
+      # portable download should be genuinely self-contained.
+      - name: Fetch cloudflared.exe from Cloudflare's official releases
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download --repo cloudflare/cloudflared --pattern 'cloudflared-windows-amd64.exe' --output app/src-tauri/target/release/cloudflared.exe
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
@@ -57,5 +88,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: RisenLab-portable
-          path: app/src-tauri/target/release/risenlab-ui.exe
+          path: |
+            app/src-tauri/target/release/risenlab-ui.exe
+            app/src-tauri/target/release/mimicry-helper.exe
+            app/src-tauri/target/release/cloudflared.exe
           if-no-files-found: error

@@ -556,8 +556,8 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
             </div>
             <div style={{ font: "500 12px system-ui", color: "var(--text-faint)", marginBottom: 12, lineHeight: 1.5 }}>
               {lang === "uk"
-                ? "Дай колезі посилання — воно відкриє цей застосунок у будь-якому браузері, з тими самими реальними даними, поки цей комп'ютер увімкнений і застосунок відкритий. Потребує встановленого cloudflared (безкоштовний, від Cloudflare) — застосунок його не завантажує сам."
-                : "Give a colleague a link — it opens this app in any browser, with the same real data, as long as this computer is on and the app is open. Needs cloudflared installed (free, from Cloudflare) — this app doesn't download it for you."}
+                ? "Дай колезі посилання — воно відкриє цей застосунок у будь-якому браузері, з тими самими реальними даними, поки цей комп'ютер увімкнений і застосунок відкритий. Потребує cloudflared (безкоштовний, від Cloudflare) — портативний .exe вже несе його з собою; якщо його не знайдено (наприклад, зібрано з коду вручну), постав окремо."
+                : "Give a colleague a link — it opens this app in any browser, with the same real data, as long as this computer is on and the app is open. Needs cloudflared (free, from Cloudflare) — the portable .exe already bundles it; if it's not found (e.g. built from source by hand), install it separately."}
             </div>
             {remote?.running ? (
               <>
