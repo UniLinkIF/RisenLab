@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
 
-export type Screen = "dashboard" | "library" | "models" | "animations" | "guide" | "settings";
+export type Screen = "dashboard" | "library" | "models" | "animations" | "showroom" | "guide" | "settings";
 
 interface Props {
   active: Screen;
@@ -129,6 +129,15 @@ export default function Sidebar({ active, onNavigate, lang }: Props) {
               transform: "rotate(35deg)",
             }}
           />
+        </div>
+      </RailButton>
+
+      <RailButton active={active === "showroom"} title={t(lang).navShowroom} onClick={() => onNavigate("showroom")}>
+        {/* A little "pedestal with an item on it" glyph — distinct from Models' plain triangle. */}
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+          <div style={{ width: 7, height: 7, borderRadius: "50%", background: active === "showroom" ? "var(--accent)" : "var(--text-faint)" }} />
+          <div style={{ width: 16, height: 3, borderRadius: 1, background: active === "showroom" ? "var(--accent)" : "var(--text-faint)" }} />
+          <div style={{ width: 10, height: 2, borderRadius: 1, background: active === "showroom" ? "var(--accent)" : "var(--text-faint)" }} />
         </div>
       </RailButton>
 

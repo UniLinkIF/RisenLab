@@ -1,0 +1,55 @@
+import { describe, expect, it } from "vitest";
+import { categorizeActor, categorizeMesh } from "./showroomCategorize";
+import type { ActorEntry, MeshEntry } from "./types";
+
+function mesh(folder: string, name: string): MeshEntry {
+  return { group: "common", archivePath: "meshes.pak", archiveStem: "meshes", entryPath: `/${folder}/${name}`, name, folder };
+}
+function actor(folder: string, name: string): ActorEntry {
+  return { group: "common", archivePath: "actors.pak", archiveStem: "actors", entryPath: `/${folder}/${name}`, name, folder };
+}
+
+describe("categorizeMesh", () => {
+  it("routes the real weapon folders to their own zones", () => {
+    expect(categorizeMesh(mesh("Items_Weapons_Swords_01", "It_Wpn_Sword_01._xmsh"))).toBe("swords");
+    expect(categorizeMesh(mesh("Items_Weapons_Shields_01", "It_Wpn_Shield_01._xmsh"))).toBe("shields");
+    expect(categorizeMesh(mesh("Items_Weapons_Axes_01", "It_Wpn_Axe_01._xmsh"))).toBe("weaponsMisc");
+    expect(categorizeMesh(mesh("Items_Weapons_Staffs_01", "It_Wpn_Staff_01._xmsh"))).toBe("weaponsMisc");
+    expect(categorizeMesh(mesh("Items_Helmets_01", "It_Helmet_01._xmsh"))).toBe("weaponsMisc");
+  });
+
+  it("splits the real Items_01 mixed bag by keyword — food vs. valuables vs. tools", () => {
+    expect(categorizeMesh(mesh("Items_01", "Item_Bread._xmsh"))).toBe("food");
+    expect(categorizeMesh(mesh("Items_01", "Item_Cheese._xmsh"))).toBe("food");
+    expect(categorizeMesh(mesh("Items_01", "Item_Meat_Raw._xmsh"))).toBe("food");
+    expect(categorizeMesh(mesh("Items_01", "Item_GoldCoin._xmsh"))).toBe("valuables");
+    expect(categorizeMesh(mesh("Items_01", "Item_Ruby._xmsh"))).toBe("valuables");
+    expect(categorizeMesh(mesh("Items_01", "Item_Necklace_Gold._xmsh"))).toBe("valuables");
+    expect(categorizeMesh(mesh("Items_01", "Item_Pickaxe._xmsh"))).toBe("tools");
+    expect(categorizeMesh(mesh("Items_01", "Item_Book_Open_01._xmsh"))).toBe("tools");
+  });
+
+  it("Items_Plants_01 goes through the same keyword split as Items_01", () => {
+    expect(categorizeMesh(mesh("Items_Plants_01", "Plant_Apple._xmsh"))).toBe("food");
+  });
+
+  it("excludes level geometry, editor, and technical folders entirely", () => {
+    expect(categorizeMesh(mesh("Levelmesh_Harbour", "wall_01._xmsh"))).toBeNull();
+    expect(categorizeMesh(mesh("Objects_Misc_01", "prop._xmsh"))).toBeNull();
+    expect(categorizeMesh(mesh("Editor_EditSupporter", "helper._xmsh"))).toBeNull();
+    expect(categorizeMesh(mesh("Testkram_FinalBattle", "test._xmsh"))).toBeNull();
+  });
+});
+
+describe("categorizeActor", () => {
+  it("routes real actor folders (substring match on the real _emfx36/X/Bodys shape)", () => {
+    expect(categorizeActor(actor("_emfx36/Humans/Bodys", "Ani_Hero._xmac"))).toBe("humans");
+    expect(categorizeActor(actor("_emfx36/Monster/Bodys", "Ani_Monster_Wolf._xmac"))).toBe("monsters");
+    expect(categorizeActor(actor("_emfx36/Mobsis/Bodys", "Ani_Mob_Cow._xmac"))).toBe("mobs");
+  });
+
+  it("excludes head-only and animated-interactable-item actors", () => {
+    expect(categorizeActor(actor("_emfx36/Heads/Bodys", "Head_01._xmac"))).toBeNull();
+    expect(categorizeActor(actor("_emfx36/Items/Bodys", "Object_Interact_Button._xmac"))).toBeNull();
+  });
+});
