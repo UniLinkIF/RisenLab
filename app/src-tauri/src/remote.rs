@@ -36,7 +36,7 @@
 //! runner, same as `get_stats`/`ai_regenerate` before it.
 
 use std::collections::HashMap;
-use std::io::{BufRead, Read};
+use std::io::{BufRead, Read as _};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -615,7 +615,7 @@ fn route_api(mut request: tiny_http::Request, app: &AppHandle, path: &str, query
                 (PathBuf::from(s.output_dir.clone()), resolve_ai_config(&s))
             };
             match batch::regenerate(&out_dir, &png_rel, scale, batch::RegenEngine::Auto, ai_config.as_ref()) {
-                Ok(()) => match logic::reset_review_status(&logic::review_status_path(&out_dir), &png_rel) {
+                Ok(_) => match logic::reset_review_status(&logic::review_status_path(&out_dir), &png_rel) {
                     Ok(()) => respond_ok(request, &serde_json::json!({ "ok": true })),
                     Err(e) => respond_error(request, 500, e.to_string()),
                 },
