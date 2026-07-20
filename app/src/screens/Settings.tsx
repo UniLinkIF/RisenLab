@@ -186,9 +186,14 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
   }
 
   // The owner's "натиснув кнопку і текстури в грі": approved textures → minimal .pXX
-  // patches → copied next to the game's own archives, one click.
+  // patches → copied next to the game's own archives, one click. `installPatches` sweeps
+  // EVERY .pXX sitting in the patch folder, not just texture ones — so this ALSO installs any
+  // animation patches already built from the Animations tab ("💾 У патч"/"💾 Всі кліпи"), even
+  // though this button only builds fresh TEXTURE patches itself. Owner: "чому тільки текстури
+  // в гру? а анімації в гру де" (2026-07-20) — they were already being installed by this same
+  // button, just under a texture-only-sounding label with no mention of the other source.
   async function onShipToGame() {
-    setPatchMessage(lang === "uk" ? "Збираю патчі…" : "Building patches…");
+    setPatchMessage(lang === "uk" ? "Збираю патчі текстур…" : "Building texture patches…");
     try {
       const written = await buildPatches();
       setPatchMessage(lang === "uk" ? "Встановлюю в гру…" : "Installing into the game…");
@@ -199,8 +204,8 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
           : written.length
             ? (lang === "uk" ? "Патчі зібрано, але встановлено 0 — перевір шлях до гри" : "Patches built but 0 installed — check the game path")
             : lang === "uk"
-              ? "Немає ПРИЙНЯТИХ текстур — спершу прийми їх у рев'ю"
-              : "No APPROVED textures — approve some in review first",
+              ? "Немає що встановлювати — прийми текстури в рев'ю АБО зберіть анімаційний патч на вкладці «Анімації»"
+              : "Nothing to install — approve some textures in review, OR build an animation patch on the Animations tab",
       );
     } catch (e) {
       setPatchMessage(String(e));
@@ -469,12 +474,12 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
                 disabled={!settings.gameExe}
                 title={
                   lang === "uk"
-                    ? "Одна кнопка робить усе: прийняті текстури → мінімальні патчі → одразу в теку гри. Це те, що тобі потрібно у 99% випадків."
-                    : "One button does everything: approved textures → minimal patches → straight into the game folder. What you want 99% of the time."
+                    ? "Прийняті текстури → мінімальні патчі → одразу в теку гри. Заодно встановлює й АНІМАЦІЙНІ патчі, якщо ти вже зібрав їх на вкладці «Анімації» (кнопки «💾 У патч»/«💾 Всі кліпи») — вони теж чекають у тій самій теці патчів."
+                    : "Approved textures → minimal patches → straight into the game folder. Also installs any ANIMATION patches you've already built on the Animations tab (“💾 To patch”/“💾 All clips”) — they wait in the same patch folder."
                 }
                 style={{ padding: "8px 16px", borderRadius: 9, background: "var(--green)", border: "none", font: "700 12px system-ui", color: "#0c1f10", opacity: settings.gameExe ? 1 : 0.5 }}
               >
-                {lang === "uk" ? "🚀 Текстури в гру" : "🚀 Ship to game"}
+                {lang === "uk" ? "🚀 Патчі в гру" : "🚀 Ship to game"}
               </button>
               <button
                 onClick={onUninstallPatches}
@@ -503,28 +508,28 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
             <div style={{ marginTop: 8, padding: 12, background: "var(--bg2)", borderRadius: 10 }}>
               <div style={{ font: "500 11.5px system-ui", color: "var(--text-faint)", marginBottom: 10, lineHeight: 1.5 }}>
                 {lang === "uk"
-                  ? "«🚀 Текстури в гру» вище вже робить ці два кроки одним кліком. Розділяй їх лише якщо хочеш зібрати патч-файли (.pXX), не встановлюючи їх у гру одразу — наприклад щоб подивитись файли перед тим, як щось зачепити."
-                  : "“🚀 Ship to game” above already does both these steps in one click. Split them only if you want to build the patch (.pXX) files without installing them into the game right away — e.g. to inspect the files before touching anything."}
+                  ? "«🚀 Патчі в гру» вище вже робить ці два кроки одним кліком. Розділяй їх лише якщо хочеш зібрати патч-файли текстур (.pXX), не встановлюючи їх у гру одразу — наприклад щоб подивитись файли перед тим, як щось зачепити. «2️⃣ Встановити в гру» встановлює УСІ .pXX з теки «Патчі» — і текстурні, і анімаційні (з вкладки «Анімації»), не лише щойно зібрані тут."
+                  : "“🚀 Ship to game” above already does both these steps in one click. Split them only if you want to build texture patch (.pXX) files without installing them into the game right away — e.g. to inspect the files before touching anything. “2️⃣ Install into game” installs EVERY .pXX in the “Patches” folder — texture AND animation ones (from the Animations tab), not just what step 1 just built."}
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <button
                   onClick={onBuildPatch}
                   title={
                     lang === "uk"
-                      ? "Крок 1/2: пакує прийняті текстури у .pXX файли в теку «Патчі» вище — гру НЕ чіпає."
-                      : "Step 1/2: packs approved textures into .pXX files in the “Patches” folder above — does NOT touch the game."
+                      ? "Крок 1/2: пакує прийняті ТЕКСТУРИ у .pXX файли в теку «Патчі» вище — гру НЕ чіпає. Анімаційні патчі збираються окремо, на вкладці «Анімації»."
+                      : "Step 1/2: packs approved TEXTURES into .pXX files in the “Patches” folder above — does NOT touch the game. Animation patches are built separately, on the Animations tab."
                   }
                   style={{ padding: "8px 16px", borderRadius: 9, background: "var(--accent)", border: "none", font: "600 12px system-ui", color: "#fff" }}
                 >
-                  {lang === "uk" ? "1️⃣ Зібрати патч" : "1️⃣ Build patch"}
+                  {lang === "uk" ? "1️⃣ Зібрати патч текстур" : "1️⃣ Build texture patch"}
                 </button>
                 <button
                   onClick={onInstallPatches}
                   disabled={!settings.gameExe}
                   title={
                     lang === "uk"
-                      ? "Крок 2/2: копіює ВЖЕ ЗІБРАНІ .pXX з теки «Патчі» у теку гри. Якщо нічого не зібрано — робити нічого."
-                      : "Step 2/2: copies the ALREADY-BUILT .pXX files from the “Patches” folder into the game folder. No-op if nothing's been built yet."
+                      ? "Крок 2/2: копіює ВСІ ВЖЕ ЗІБРАНІ .pXX з теки «Патчі» у теку гри — текстурні (крок 1) і анімаційні (з вкладки «Анімації») разом. Якщо нічого не зібрано — робити нічого."
+                      : "Step 2/2: copies ALL ALREADY-BUILT .pXX files from the “Patches” folder into the game folder — texture ones (step 1) and animation ones (from the Animations tab) together. No-op if nothing's been built yet."
                   }
                   style={{ padding: "8px 16px", borderRadius: 9, background: "var(--bg1)", border: "1px solid var(--accent)", font: "600 12px system-ui", color: "var(--text)", opacity: settings.gameExe ? 1 : 0.5 }}
                 >

@@ -1099,6 +1099,32 @@ pub fn regenerate(out_dir: &Path, png_rel: &str, scale: u32, engine: RegenEngine
     Ok(dest)
 }
 
+/// Downscales PNG bytes to fit within `max_edge` on the longer side (Lanczos3), leaving the
+/// image untouched if it's already small enough. Used to cap how big a `data:` URI the packaged
+/// Tauri app ever builds for an on-screen PREVIEW — real incident (2026-07-20): a full-scene GUI
+/// texture upscaled 2x by the "Покращити" AI preset (2048→4096px, a genuine 21MB PNG) produced a
+/// ~28MB base64 string returned through Tauri's IPC and set as a CSS `background: url(...)`,
+/// which the webview never managed to render — the Review screen showed both panels permanently
+/// blank with no error at all (owner: "згенерував нову текстуру, але не можу переглянути"). The
+/// real full-resolution file on disk is NEVER touched by this — only what gets read back out as
+/// a `data:` URL for the review UI's own convenience. `read_texture_data_url`/
+/// `read_edited_data_url` in `app/src-tauri/src/main.rs` are the real callers.
+pub fn downscale_for_preview(bytes: &[u8], max_edge: u32) -> Result<Vec<u8>> {
+    let img = image::load_from_memory(bytes).context("decoding PNG for preview downscale")?;
+    let (w, h) = (img.width(), img.height());
+    if w.max(h) <= max_edge {
+        return Ok(bytes.to_vec());
+    }
+    let scale = max_edge as f32 / w.max(h) as f32;
+    let (new_w, new_h) = ((w as f32 * scale).round().max(1.0) as u32, (h as f32 * scale).round().max(1.0) as u32);
+    let resized = image::imageops::resize(&img, new_w, new_h, image::imageops::FilterType::Lanczos3);
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(resized)
+        .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+        .context("re-encoding preview-downscaled PNG")?;
+    Ok(out)
+}
+
 /// Copies a library texture's real PNG bytes (the CURRENT variant — `edited/<png_rel>` if one
 /// exists, otherwise the original extracted PNG) to an arbitrary destination path picked by the
 /// user — "Витягнути" (owner request, 2026-07-20: the button existed in the UI but did nothing;
@@ -1697,6 +1723,28 @@ mod tests {
         let out_dir = temp_dir("regenerate_missing");
         assert!(regenerate(&out_dir, "nope.png", 2, RegenEngine::Lanczos, None).is_err());
         fs::remove_dir_all(&out_dir).ok();
+    }
+
+    #[test]
+    fn downscale_for_preview_shrinks_a_larger_image_to_fit_max_edge() {
+        let img = image::RgbaImage::from_pixel(4096, 4096, image::Rgba([12, 34, 56, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+
+        let out = downscale_for_preview(&bytes, 1024).unwrap();
+        let decoded = image::load_from_memory(&out).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (1024, 1024));
+        assert!(out.len() < bytes.len(), "downscaled preview should be smaller than the 4096px source");
+    }
+
+    #[test]
+    fn downscale_for_preview_leaves_a_smaller_image_untouched() {
+        let img = image::RgbaImage::from_pixel(64, 32, image::Rgba([1, 2, 3, 255]));
+        let mut bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut bytes), image::ImageFormat::Png).unwrap();
+
+        let out = downscale_for_preview(&bytes, 1024).unwrap();
+        assert_eq!(out, bytes, "already-small images must be returned byte-identical, not re-encoded");
     }
 
     #[test]

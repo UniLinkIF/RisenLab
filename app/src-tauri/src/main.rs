@@ -133,10 +133,18 @@ fn list_library(state: State<AppState>) -> Result<Vec<LibraryEntryDto>, String> 
         .map_err(|e| e.to_string())
 }
 
+/// Cap for the on-screen review PREVIEW only — never applied to the real files `apply`/
+/// `install_patches` ship into the game. See `batch::downscale_for_preview`'s doc comment for
+/// the real incident this fixes: a 4096px, 21MB AI-upscaled PNG turned into a ~28MB `data:` URI
+/// through Tauri's IPC, which the webview never rendered — a permanently blank Review panel with
+/// no error at all.
+const PREVIEW_MAX_EDGE: u32 = 2048;
+
 #[tauri::command(rename_all = "camelCase")]
 fn read_texture_data_url(state: State<AppState>, png_rel: String) -> Result<String, String> {
     let out_dir = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
     let bytes = std::fs::read(out_dir.join(&png_rel)).map_err(|e| e.to_string())?;
+    let bytes = batch::downscale_for_preview(&bytes, PREVIEW_MAX_EDGE).map_err(|e| e.to_string())?;
     Ok(logic::data_url_png(&bytes))
 }
 
@@ -144,6 +152,7 @@ fn read_texture_data_url(state: State<AppState>, png_rel: String) -> Result<Stri
 fn read_edited_data_url(state: State<AppState>, png_rel: String) -> Result<String, String> {
     let out_dir = PathBuf::from(state.settings.lock().unwrap().output_dir.clone());
     let bytes = std::fs::read(out_dir.join("edited").join(&png_rel)).map_err(|e| e.to_string())?;
+    let bytes = batch::downscale_for_preview(&bytes, PREVIEW_MAX_EDGE).map_err(|e| e.to_string())?;
     Ok(logic::data_url_png(&bytes))
 }
 

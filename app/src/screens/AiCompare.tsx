@@ -36,6 +36,7 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   const [index, setIndex] = useState(0);
   const [original, setOriginal] = useState<string | null>(null);
   const [variant, setVariant] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   // Slider-compare divider position (0..1). Driven by pointer drag/click on the container.
   const [sliderPos, setSliderPos] = useState(0.5);
@@ -139,10 +140,20 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
   useEffect(() => {
     setOriginal(null);
     setVariant(null);
+    setLoadError(null);
     cancelRejectConfirm();
     if (!current) return;
-    readTextureDataUrl(current.pngRel).then(setOriginal);
-    readEditedDataUrl(current.pngRel).then(setVariant);
+    // Both reads used to have no .catch() at all — a failure (e.g. the packaged app's IPC
+    // choking on a many-MB data: URL for an oversized AI-upscaled texture, since fixed
+    // server-side — see PREVIEW_MAX_EDGE in main.rs) left the panel silently blank forever,
+    // with zero indication anything had gone wrong (real owner report, 2026-07-20: "згенерував
+    // нову текстуру, але не можу переглянути"). Now it surfaces instead.
+    readTextureDataUrl(current.pngRel)
+      .then(setOriginal)
+      .catch((e) => setLoadError(String(e)));
+    readEditedDataUrl(current.pngRel)
+      .then(setVariant)
+      .catch((e) => setLoadError(String(e)));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [current]);
 
@@ -219,6 +230,13 @@ export default function AiCompare({ lang, initialPngRel, modelObjUrl }: Props) {
           ))}
         </div>
       </div>
+
+      {loadError ? (
+        <div style={{ margin: "0 26px", padding: "10px 14px", borderRadius: 10, background: "rgba(220,50,50,.12)", border: "1px solid var(--red)", color: "var(--red)", font: "500 12px system-ui" }}>
+          {lang === "uk" ? "Не вдалось завантажити зображення: " : "Failed to load the image: "}
+          {loadError}
+        </div>
+      ) : null}
 
       {mode === "3d" && modelObjUrl ? (
         <div style={{ flex: 1, display: "flex", gap: 2, padding: "18px 26px", minHeight: 0 }}>
