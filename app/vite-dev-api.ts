@@ -12,6 +12,19 @@ import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 
 const CLI_PATH = path.resolve(__dirname, "../target/debug/risenlab.exe");
+// mesh/actor-to-obj shells out to this separately-built GPL binary (see src/content.rs). Its own
+// `helper_exe_path()` has a CWD-relative dev fallback ("../mimicry-helper/mimicry-helper.exe")
+// that assumes the process's CWD is the repo root — true when the CLI is run by hand from there,
+// FALSE when Vite spawns it, since Node's own CWD here is `app/` (one level deeper), which makes
+// that relative path resolve to `RisenLab/mimicry-helper` (doesn't exist) instead of the real
+// `Desktop/Claude/mimicry-helper` (a sibling of RisenLab, not inside it). Real bug, found
+// 2026-07-20 while loading ~300 never-before-cached meshes at once (Showroom): every single one
+// failed with "mimicry-helper.exe not found", not just a random few — it's not a race, it's
+// deterministic per dev-server CWD, and the AI-mesh cache from a directly-run CLI call earlier
+// (correct CWD, worked fine) was masking it since a cached item never re-invokes mimicry-helper.
+// Fixed by giving the CLI the real absolute path directly via its own documented env var
+// override, rather than trying to make the Rust-side relative fallback CWD-independent.
+const MIMICRY_HELPER_PATH = path.resolve(__dirname, "../../mimicry-helper/mimicry-helper.exe");
 
 function homeDesktop(): string {
   const home = process.env.USERPROFILE ?? process.cwd();
@@ -55,7 +68,7 @@ function sendJson(res: ServerResponse, status: number, data: unknown) {
 
 function runCli(args: string[]): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(CLI_PATH, args, { windowsHide: true });
+    const child = spawn(CLI_PATH, args, { windowsHide: true, env: { ...process.env, RISENLAB_MIMICRY_HELPER: MIMICRY_HELPER_PATH } });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (d) => (stdout += d.toString()));
