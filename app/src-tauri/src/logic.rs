@@ -46,6 +46,22 @@ pub struct AppSettings {
     /// `ai.rs`/`types.ts`/`Settings.tsx` — this struct is the third, easy-to-forget place.
     #[serde(default)]
     pub ai_regenerate: Option<bool>,
+    /// Which tunnel backend `remote::start` uses: `None`/`"cloudflare"` (default, zero-signup
+    /// quick tunnel) | `"ngrok"`. Added 2026-07-21 after a real owner network blocked
+    /// Cloudflare Tunnel's registration IPs at the raw TCP level (confirmed independently of
+    /// this app — trycloudflare.com's IPs timed out on a bare TCP connect while ngrok's,
+    /// localtunnel's, and Tailscale's all connected fine) — ngrok is the fallback since ngrok
+    /// gives a genuinely standalone Windows .exe like cloudflared does (Tailscale needs an
+    /// installed background service + account + enabling Funnel in the tailnet policy, much
+    /// more setup for a "just download and click" tool).
+    #[serde(default)]
+    pub remote_tunnel_provider: Option<String>,
+    /// Required when `remote_tunnel_provider` is `"ngrok"` — ngrok's agent has required a
+    /// signed-up account's authtoken for every tunnel (even anonymous ones) since ~2021, unlike
+    /// cloudflared's quick tunnels. One-time setup: sign up free at ngrok.com, copy the
+    /// authtoken from the dashboard, paste here.
+    #[serde(default)]
+    pub ngrok_authtoken: Option<String>,
 }
 
 /// Reads `USERPROFILE` (Windows home dir); falls back to `.` if unset, which only happens
@@ -72,6 +88,8 @@ pub fn default_settings_for(home: &Path) -> AppSettings {
         ai_model: None,
         ai_creativity: None,
         ai_regenerate: None,
+        remote_tunnel_provider: None,
+        ngrok_authtoken: None,
     }
 }
 
@@ -389,6 +407,27 @@ mod tests {
         assert!(raw.contains("\"aiRegenerate\": true"), "field silently dropped on save: {raw}");
         let loaded = load_settings(&path, default_settings_for(&dir));
         assert_eq!(loaded.ai_regenerate, Some(true));
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Same class of bug as above, for the two fields added 2026-07-21 (ngrok tunnel fallback)
+    /// — a struct literal is easy to update everywhere except the one place that actually
+    /// matters (this struct itself), and there's no compiler error to catch a missing field
+    /// when `#[serde(default)]` is present, only a silent drop on save.
+    #[test]
+    fn ngrok_settings_survive_the_real_json_round_trip() {
+        let dir = temp_dir("settings_ngrok");
+        let path = settings_path(&dir);
+        let mut settings = default_settings_for(&dir);
+        settings.remote_tunnel_provider = Some("ngrok".to_string());
+        settings.ngrok_authtoken = Some("2abc_realistictoken".to_string());
+        save_settings_to(&path, &settings).unwrap();
+        let raw = std::fs::read_to_string(&path).unwrap();
+        assert!(raw.contains("\"remoteTunnelProvider\": \"ngrok\""), "field silently dropped on save: {raw}");
+        assert!(raw.contains("\"ngrokAuthtoken\": \"2abc_realistictoken\""), "field silently dropped on save: {raw}");
+        let loaded = load_settings(&path, default_settings_for(&dir));
+        assert_eq!(loaded.remote_tunnel_provider, Some("ngrok".to_string()));
+        assert_eq!(loaded.ngrok_authtoken, Some("2abc_realistictoken".to_string()));
         std::fs::remove_dir_all(&dir).ok();
     }
 

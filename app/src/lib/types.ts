@@ -110,6 +110,13 @@ export interface AppSettings {
   /** "✨ Нові текстури" mode: true = the AI fully repaints the texture (high strength, a
    * reimagine prompt) instead of faithfully re-detailing it. */
   aiRegenerate?: boolean | null;
+  /** Remote-access tunnel backend: `"cloudflare"` (default) | `"ngrok"`. Added 2026-07-21 —
+   * ngrok is the fallback for networks that block Cloudflare Tunnel's registration IPs (a real
+   * owner network did — confirmed at the raw TCP level, independent of this app). */
+  remoteTunnelProvider?: string | null;
+  /** Required when `remoteTunnelProvider` is `"ngrok"` — free account, ngrok.com dashboard;
+   * ngrok has required a signed-up authtoken for every tunnel since ~2021, unlike cloudflared. */
+  ngrokAuthtoken?: string | null;
 }
 
 export interface GameCheckResult {
@@ -145,4 +152,8 @@ export interface RemoteStatus {
   token: string | null;
   tunnelUrl: string | null;
   cloudflaredAvailable: boolean;
+  /** Whether `ngrok.exe` is present, independent of which provider is currently selected. */
+  ngrokAvailable: boolean;
+  /** Which backend is (or would be) used: `"cloudflare"` | `"ngrok"`. */
+  provider: string;
 }

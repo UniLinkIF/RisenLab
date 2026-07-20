@@ -16,12 +16,22 @@
 //!   same `batch`/`logic` functions the real `#[tauri::command]`s in `main.rs` call — in-process,
 //!   not shelling out to the CLI the dev bridge uses, since this runs inside the real backend.
 //!
-//! Exposure to the public internet goes through `cloudflared`'s free "quick tunnel"
-//! (`cloudflared tunnel --url http://127.0.0.1:<port>`) — deliberately NOT bundled/auto-
-//! downloaded by this app: the owner installs it once, themselves, from Cloudflare's own
-//! release page, the same trust model as installing any other local tool. If it's missing,
-//! `cloudflared_available` on the status DTO tells the UI to say so plainly instead of silently
-//! not working.
+//! Exposure to the public internet goes through one of two tunnel backends
+//! (`AppSettings::remote_tunnel_provider`, default `cloudflare`):
+//! - `cloudflared`'s free "quick tunnel" (`cloudflared tunnel --url http://127.0.0.1:<port>`) —
+//!   zero signup, but its registration endpoint is a real, network-blockable target: a real
+//!   owner network (2026-07-21) blocked its IPs at the raw TCP level (confirmed independently
+//!   of this app with plain `curl`), while ngrok/localtunnel/Tailscale's endpoints all connected
+//!   fine on the same network — so this can't be assumed to always work.
+//! - `ngrok` (`ngrok http <port> --authtoken <token> --log stdout --log-format json`) — the
+//!   fallback for exactly that case. Unlike cloudflared, ngrok has required a signed-up
+//!   account's authtoken for every tunnel since ~2021 (`AppSettings::ngrok_authtoken`), even
+//!   anonymous ones — a one-time owner setup cost, not a bug.
+//!
+//! Both binaries are bundled by the CI build (see `build-windows.yml`), same trust model either
+//! way: fetched from the provider's own official release at build time, never downloaded at
+//! runtime on the end user's machine. `cloudflared_available`/`ngrok_available` on the status
+//! DTO tell the UI which binaries are actually present, regardless of which is selected.
 //!
 //! Security model: the tunnel URL itself is an unguessable random subdomain (cloudflared's own
 //! design) — the shared TOKEN below is defense in depth on top of that, not the only barrier.
@@ -60,7 +70,32 @@ struct RemoteSession {
     token: String,
     tunnel_url: Arc<Mutex<Option<String>>>,
     server: Arc<tiny_http::Server>,
-    cloudflared_child: Option<Child>,
+    tunnel_child: Option<Child>,
+    provider: TunnelProvider,
+}
+
+/// Which tunnel backend is providing the public URL — see `AppSettings::remote_tunnel_provider`
+/// for why ngrok exists at all (a real owner network blocks Cloudflare Tunnel's registration
+/// IPs at the raw TCP level, confirmed independently of this app).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TunnelProvider {
+    Cloudflare,
+    Ngrok,
+}
+
+impl TunnelProvider {
+    fn from_setting(s: Option<&str>) -> Self {
+        match s {
+            Some("ngrok") => TunnelProvider::Ngrok,
+            _ => TunnelProvider::Cloudflare,
+        }
+    }
+    fn as_str(self) -> &'static str {
+        match self {
+            TunnelProvider::Cloudflare => "cloudflare",
+            TunnelProvider::Ngrok => "ngrok",
+        }
+    }
 }
 
 pub struct RemoteState(Mutex<Option<RemoteSession>>);
@@ -79,6 +114,14 @@ pub struct RemoteStatusDto {
     pub token: Option<String>,
     pub tunnel_url: Option<String>,
     pub cloudflared_available: bool,
+    /// Whether `ngrok.exe` is present (next to this binary or on PATH) — surfaced regardless of
+    /// which provider is currently selected/running, so Settings can tell the owner it's ready
+    /// (or missing) before they even try to switch to it.
+    pub ngrok_available: bool,
+    /// Which backend is (or would be) used: `"cloudflare"` | `"ngrok"` — mirrors
+    /// `AppSettings::remote_tunnel_provider`, echoed back so the UI doesn't need to duplicate
+    /// the "None means cloudflare" default logic itself.
+    pub provider: String,
 }
 
 /// Locates `cloudflared.exe`: bundled next to this binary first (the portable-exe CI build
@@ -101,9 +144,36 @@ fn cloudflared_available() -> bool {
     cmd.output().is_ok()
 }
 
+/// Same "next to this binary, then PATH" resolution as `cloudflared_path()` — the portable-exe
+/// CI build fetches `ngrok.exe` alongside `cloudflared.exe`/`mimicry-helper.exe`.
+fn ngrok_path() -> PathBuf {
+    let next_to_exe = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join("ngrok.exe")));
+    match next_to_exe {
+        Some(p) if p.exists() => p,
+        _ => PathBuf::from("ngrok"),
+    }
+}
+
+fn ngrok_available() -> bool {
+    let mut cmd = Command::new(ngrok_path());
+    cmd.arg("version");
+    risenlab::content::suppress_console_window(&mut cmd);
+    cmd.output().is_ok()
+}
+
+/// Reads the owner's chosen provider + ngrok authtoken straight from `AppState.settings` — the
+/// same shared state `route_api` already reads, so a Settings change is visible here without
+/// any extra plumbing.
+fn tunnel_settings(app: &AppHandle) -> (TunnelProvider, Option<String>) {
+    let state = app.state::<AppState>();
+    let s = state.settings.lock().unwrap();
+    (TunnelProvider::from_setting(s.remote_tunnel_provider.as_deref()), s.ngrok_authtoken.clone())
+}
+
 pub fn status(state: &RemoteState) -> RemoteStatusDto {
     let guard = state.0.lock().unwrap();
     let cloudflared_available = cloudflared_available();
+    let ngrok_available = ngrok_available();
     match &*guard {
         Some(session) => RemoteStatusDto {
             running: true,
@@ -111,8 +181,18 @@ pub fn status(state: &RemoteState) -> RemoteStatusDto {
             token: Some(session.token.clone()),
             tunnel_url: session.tunnel_url.lock().unwrap().clone(),
             cloudflared_available,
+            ngrok_available,
+            provider: session.provider.as_str().to_string(),
         },
-        None => RemoteStatusDto { running: false, port: None, token: None, tunnel_url: None, cloudflared_available },
+        None => RemoteStatusDto {
+            running: false,
+            port: None,
+            token: None,
+            tunnel_url: None,
+            cloudflared_available,
+            ngrok_available,
+            provider: TunnelProvider::Cloudflare.as_str().to_string(),
+        },
     }
 }
 
@@ -125,6 +205,8 @@ pub fn start(app: AppHandle, state: &RemoteState) -> Result<RemoteStatusDto, Str
             token: Some(session.token.clone()),
             tunnel_url: session.tunnel_url.lock().unwrap().clone(),
             cloudflared_available: cloudflared_available(),
+            ngrok_available: ngrok_available(),
+            provider: session.provider.as_str().to_string(),
         });
     }
 
@@ -148,18 +230,42 @@ pub fn start(app: AppHandle, state: &RemoteState) -> Result<RemoteStatusDto, Str
         });
     }
 
+    let (provider, ngrok_authtoken) = tunnel_settings(&app);
+
+    // If the chosen provider isn't actually usable (missing binary/authtoken), the HTTP server
+    // already opened above on `REMOTE_PORT` must still be shut down before returning an error —
+    // otherwise a second `start` attempt fails with "port already in use" despite no session
+    // ever having been stored.
+    if provider == TunnelProvider::Ngrok {
+        if !ngrok_available() {
+            server.unblock();
+            return Err("ngrok.exe не знайдено поруч із застосунком і не в PATH".to_string());
+        }
+        if ngrok_authtoken.as_deref().unwrap_or("").trim().is_empty() {
+            server.unblock();
+            return Err("Встав ngrok authtoken у Налаштуваннях (безкоштовний акаунт на ngrok.com)".to_string());
+        }
+    }
+
     let tunnel_url = Arc::new(Mutex::new(None));
-    let cloudflared_child = if cloudflared_available() { spawn_cloudflared(tunnel_url.clone()) } else { None };
-    let cloudflared_started = cloudflared_child.is_some();
+    let tunnel_child = match provider {
+        TunnelProvider::Cloudflare => {
+            if cloudflared_available() { spawn_cloudflared(tunnel_url.clone()) } else { None }
+        }
+        TunnelProvider::Ngrok => spawn_ngrok(&ngrok_authtoken.unwrap_or_default(), tunnel_url.clone()),
+    };
+    let child_started = tunnel_child.is_some();
 
     let dto = RemoteStatusDto {
         running: true,
         port: Some(REMOTE_PORT),
         token: Some(token.clone()),
         tunnel_url: None,
-        cloudflared_available: cloudflared_started,
+        cloudflared_available: provider == TunnelProvider::Cloudflare && child_started,
+        ngrok_available: provider == TunnelProvider::Ngrok && child_started,
+        provider: provider.as_str().to_string(),
     };
-    *guard = Some(RemoteSession { token, tunnel_url, server, cloudflared_child });
+    *guard = Some(RemoteSession { token, tunnel_url, server, tunnel_child, provider });
     Ok(dto)
 }
 
@@ -170,7 +276,7 @@ pub fn stop(state: &RemoteState) {
         // shut a server down from another thread (dropping the `Server` alone doesn't wake
         // threads already parked inside `recv()`).
         session.server.unblock();
-        if let Some(mut child) = session.cloudflared_child {
+        if let Some(mut child) = session.tunnel_child {
             let _ = child.kill();
             let _ = child.wait();
         }
@@ -254,6 +360,74 @@ fn extract_trycloudflare_url(line: &str) -> Option<String> {
     let candidate = rest[..end].trim_end_matches(['.', ',']);
     let host = candidate.strip_prefix("https://").unwrap_or(candidate);
     if host.ends_with(".trycloudflare.com") && host != "api.trycloudflare.com" {
+        Some(candidate.to_string())
+    } else {
+        None
+    }
+}
+
+/// Spawns `ngrok.exe http <port> --authtoken <token> --log stdout --log-format json` and scans
+/// its output for the assigned public URL the same way `spawn_cloudflared` does — one thread
+/// per stream, first match wins. `--log-format json` is used (rather than the default `term`
+/// tables) so every line is a self-contained record, but `extract_ngrok_url` deliberately still
+/// does plain substring scanning rather than parsing JSON keys: ngrok's exact JSON schema for
+/// the "started tunnel" event isn't documented anywhere stable enough to hard-code a field name
+/// against, and scanning is exactly as robust here as it is for cloudflared above.
+fn spawn_ngrok(authtoken: &str, tunnel_url: Arc<Mutex<Option<String>>>) -> Option<Child> {
+    let mut cmd = Command::new(ngrok_path());
+    cmd.args([
+        "http",
+        &REMOTE_PORT.to_string(),
+        "--authtoken",
+        authtoken,
+        "--log",
+        "stdout",
+        "--log-format",
+        "json",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    risenlab::content::suppress_console_window(&mut cmd);
+    let mut child = cmd.spawn().ok()?;
+
+    let streams: Vec<StreamKind> = [child.stderr.take().map(StreamKind::Stderr), child.stdout.take().map(StreamKind::Stdout)]
+        .into_iter()
+        .flatten()
+        .collect();
+    for stream in streams {
+        let slot = tunnel_url.clone();
+        std::thread::spawn(move || {
+            let reader: Box<dyn BufRead> = match stream {
+                StreamKind::Stderr(s) => Box::new(std::io::BufReader::new(s)),
+                StreamKind::Stdout(s) => Box::new(std::io::BufReader::new(s)),
+            };
+            for line in reader.lines().flatten() {
+                if let Some(url) = extract_ngrok_url(&line) {
+                    let mut guard = slot.lock().unwrap();
+                    if guard.is_none() {
+                        *guard = Some(url);
+                    }
+                    break;
+                }
+            }
+        });
+    }
+    Some(child)
+}
+
+/// ngrok's assigned tunnel domain has used a few suffixes across its history depending on
+/// account tier/era (`.ngrok.io` older free tier, `.ngrok-free.app`/`.ngrok.app` current) — none
+/// of ngrok's own infrastructure hosts (`dashboard.ngrok.com`, `api.ngrok.com`,
+/// `*.ngrok-agent.com`) share any of these suffixes, so — unlike cloudflared's
+/// `api.trycloudflare.com` trap — a plain suffix check needs no separate exclusion list here.
+fn extract_ngrok_url(line: &str) -> Option<String> {
+    let idx = line.find("https://")?;
+    let rest = &line[idx..];
+    let end = rest.find(|c: char| c.is_whitespace() || c == '|' || c == '"' || c == ',' || c == '}').unwrap_or(rest.len());
+    let candidate = rest[..end].trim_end_matches(['.', ',']);
+    let host = candidate.strip_prefix("https://").unwrap_or(candidate);
+    const TUNNEL_SUFFIXES: [&str; 3] = [".ngrok-free.app", ".ngrok.app", ".ngrok.io"];
+    if TUNNEL_SUFFIXES.iter().any(|suf| host.ends_with(suf)) {
         Some(candidate.to_string())
     } else {
         None
@@ -809,5 +983,33 @@ mod tests {
     #[test]
     fn extract_trycloudflare_url_ignores_lines_with_no_url() {
         assert_eq!(extract_trycloudflare_url("2026-07-20T19:30:02Z INF Registered tunnel connection"), None);
+    }
+
+    #[test]
+    fn extract_ngrok_url_reads_a_real_json_log_line() {
+        // Shape confirmed against a real ngrok.exe v3.39.9 invocation's JSON log output
+        // (2026-07-21) — fields present, order not guaranteed, comma/quote-terminated.
+        assert_eq!(
+            extract_ngrok_url(r#"{"lvl":"info","msg":"started tunnel","obj":"tunnels","url":"https://abcd1234.ngrok-free.app","t":"2026-07-21T01:42:08+03:00"}"#),
+            Some("https://abcd1234.ngrok-free.app".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_ngrok_url_accepts_older_ngrok_io_and_ngrok_app_suffixes() {
+        assert_eq!(extract_ngrok_url(r#"{"url":"https://foo.ngrok.io"}"#), Some("https://foo.ngrok.io".to_string()));
+        assert_eq!(extract_ngrok_url(r#"{"url":"https://foo.ngrok.app"}"#), Some("https://foo.ngrok.app".to_string()));
+    }
+
+    #[test]
+    fn extract_ngrok_url_ignores_ngrok_s_own_infrastructure_hosts() {
+        // Real lines seen from an actual invocation (2026-07-21, invalid-authtoken run): none of
+        // these should ever be mistaken for the assigned tunnel URL.
+        assert_eq!(extract_ngrok_url(r#"{"err":"Post \"https://update.ngrok-agent.com/check\": context canceled"}"#), None);
+        assert_eq!(
+            extract_ngrok_url("Instructions to install your authtoken are on your ngrok dashboard:\nhttps://dashboard.ngrok.com/get-started/your-authtoken"),
+            None
+        );
+        assert_eq!(extract_ngrok_url(r#"{"lvl":"info","msg":"no configuration paths supplied"}"#), None);
     }
 }

@@ -90,6 +90,19 @@ jobs:
         run: |
           gh release download --repo cloudflare/cloudflared --pattern 'cloudflared-windows-amd64.exe' --output app/src-tauri/target/release/cloudflared.exe
 
+      # ngrok — the alternative remote-access tunnel (see remote.rs's module doc): a real owner
+      # network blocked Cloudflare Tunnel's registration IPs at the raw TCP level (2026-07-21,
+      # confirmed independently of this app with plain curl), so cloudflared can't be assumed to
+      # always work. Fetched from ngrok's own official binary distribution (equinox.io is
+      # ngrok's own build/distribution host, same one linked from their docs) — verified this
+      # exact URL returns a real ngrok.exe v3 zip before wiring it in here.
+      - name: Fetch ngrok.exe from ngrok's official distribution
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip" -OutFile ngrok.zip
+          Expand-Archive -Path ngrok.zip -DestinationPath ngrok-extracted -Force
+          Copy-Item ngrok-extracted/ngrok.exe app/src-tauri/target/release/ngrok.exe
+
       - name: Upload installers
         uses: actions/upload-artifact@v4
         with:
@@ -107,6 +120,7 @@ jobs:
             app/src-tauri/target/release/risenlab-ui.exe
             app/src-tauri/target/release/mimicry-helper.exe
             app/src-tauri/target/release/cloudflared.exe
+            app/src-tauri/target/release/ngrok.exe
           if-no-files-found: error
 
       # Actions artifacts (the upload above) need a GitHub login to download even on a public
@@ -122,6 +136,7 @@ jobs:
           Copy-Item app/src-tauri/target/release/risenlab-ui.exe dist-release/RisenLab.exe
           Copy-Item app/src-tauri/target/release/mimicry-helper.exe dist-release/
           Copy-Item app/src-tauri/target/release/cloudflared.exe dist-release/
+          Copy-Item app/src-tauri/target/release/ngrok.exe dist-release/
           Compress-Archive -Path dist-release/* -DestinationPath RisenLab-portable.zip -Force
 
       # Rolling "latest" release: the owner always shares the SAME link, this just keeps its
@@ -134,4 +149,4 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest RisenLab-portable.zip \
             --title "RisenLab (portable, always up to date)" \
-            --notes "Автоматична збірка з main (${{ github.sha }}). Розпакуй в будь-яку папку — RisenLab.exe, mimicry-helper.exe і cloudflared.exe вже разом. / Automated build from main. Unzip anywhere — RisenLab.exe, mimicry-helper.exe, and cloudflared.exe already travel together."
+            --notes "Автоматична збірка з main (${{ github.sha }}). Розпакуй в будь-яку папку — RisenLab.exe, mimicry-helper.exe, cloudflared.exe і ngrok.exe вже разом. / Automated build from main. Unzip anywhere — RisenLab.exe, mimicry-helper.exe, cloudflared.exe, and ngrok.exe already travel together."

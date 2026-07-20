@@ -26,6 +26,7 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
   const [showAdvancedPatch, setShowAdvancedPatch] = useState(false);
   const [remote, setRemote] = useState<RemoteStatus | null>(null);
   const [remoteBusy, setRemoteBusy] = useState(false);
+  const [remoteError, setRemoteError] = useState<string | null>(null);
   const remotePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -64,13 +65,25 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
 
   async function handleStartRemote() {
     setRemoteBusy(true);
+    setRemoteError(null);
     try {
       const r = await startRemoteAccess();
       setRemote(r);
       if (!r.tunnelUrl) startRemotePolling();
     } catch (e) {
-      setRemote({ running: false, port: null, token: null, tunnelUrl: null, cloudflaredAvailable: false });
-      setError(String(e));
+      setRemote({
+        running: false,
+        port: null,
+        token: null,
+        tunnelUrl: null,
+        cloudflaredAvailable: remote?.cloudflaredAvailable ?? false,
+        ngrokAvailable: remote?.ngrokAvailable ?? false,
+        provider: remote?.provider ?? "cloudflare",
+      });
+      // A dedicated error slot, not the shared `error` state (that one only renders inside the
+      // Game section box above — a remote-access failure would otherwise set it invisibly,
+      // with no indication anywhere near the button the owner just clicked).
+      setRemoteError(String(e));
     } finally {
       setRemoteBusy(false);
     }
@@ -80,7 +93,15 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
     setRemoteBusy(true);
     try {
       await stopRemoteAccess();
-      setRemote({ running: false, port: null, token: null, tunnelUrl: null, cloudflaredAvailable: remote?.cloudflaredAvailable ?? false });
+      setRemote({
+        running: false,
+        port: null,
+        token: null,
+        tunnelUrl: null,
+        cloudflaredAvailable: remote?.cloudflaredAvailable ?? false,
+        ngrokAvailable: remote?.ngrokAvailable ?? false,
+        provider: remote?.provider ?? "cloudflare",
+      });
       if (remotePollRef.current) {
         clearInterval(remotePollRef.current);
         remotePollRef.current = null;
@@ -556,9 +577,48 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
             </div>
             <div style={{ font: "500 12px system-ui", color: "var(--text-faint)", marginBottom: 12, lineHeight: 1.5 }}>
               {lang === "uk"
-                ? "Дай колезі посилання — воно відкриє цей застосунок у будь-якому браузері, з тими самими реальними даними, поки цей комп'ютер увімкнений і застосунок відкритий. Потребує cloudflared (безкоштовний, від Cloudflare) — портативний .exe вже несе його з собою; якщо його не знайдено (наприклад, зібрано з коду вручну), постав окремо."
-                : "Give a colleague a link — it opens this app in any browser, with the same real data, as long as this computer is on and the app is open. Needs cloudflared (free, from Cloudflare) — the portable .exe already bundles it; if it's not found (e.g. built from source by hand), install it separately."}
+                ? "Дай колезі посилання — воно відкриє цей застосунок у будь-якому браузері, з тими самими реальними даними, поки цей комп'ютер увімкнений і застосунок відкритий."
+                : "Give a colleague a link — it opens this app in any browser, with the same real data, as long as this computer is on and the app is open."}
             </div>
+            {!remote?.running ? (
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ font: "500 12.5px system-ui", color: "var(--text-dim)", marginBottom: 6 }}>
+                  {lang === "uk" ? "Тунель" : "Tunnel"}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                  {(
+                    [
+                      ["cloudflare", "Cloudflare", lang === "uk" ? "Без реєстрації — але деякі мережі блокують саме його" : "No signup — but some networks block it specifically"],
+                      ["ngrok", "ngrok", lang === "uk" ? "Потрібен безкоштовний акаунт + authtoken (ngrok.com)" : "Needs a free account + authtoken (ngrok.com)"],
+                    ] as [string, string, string][]
+                  ).map(([id, label, hint]) => {
+                    const active = (settings?.remoteTunnelProvider ?? "cloudflare") === id;
+                    return (
+                      <button
+                        key={id}
+                        onClick={() => settings && persist({ ...settings, remoteTunnelProvider: id === "cloudflare" ? null : id })}
+                        title={hint}
+                        style={{ padding: "8px 14px", borderRadius: 8, background: active ? "var(--accent)" : "var(--bg2)", border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`, font: "600 11.5px system-ui", color: active ? "#fff" : "var(--text-dim)", whiteSpace: "nowrap" }}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {settings?.remoteTunnelProvider === "ngrok" ? (
+                  <input
+                    type="password"
+                    placeholder={lang === "uk" ? "ngrok authtoken (dashboard.ngrok.com/get-started/your-authtoken)" : "ngrok authtoken (dashboard.ngrok.com/get-started/your-authtoken)"}
+                    value={settings?.ngrokAuthtoken ?? ""}
+                    onChange={(e) => settings && persistDebounced({ ...settings, ngrokAuthtoken: e.target.value })}
+                    style={{ width: "100%", background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+            {remoteError ? (
+              <div style={{ font: "500 12px system-ui", color: "var(--red)", marginBottom: 10, lineHeight: 1.5 }}>{remoteError}</div>
+            ) : null}
             {remote?.running ? (
               <>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
@@ -607,11 +667,15 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               </>
             ) : (
               <>
-                {remote && !remote.cloudflaredAvailable ? (
+                {remote && (settings?.remoteTunnelProvider === "ngrok" ? !remote.ngrokAvailable : !remote.cloudflaredAvailable) ? (
                   <div style={{ font: "500 12px system-ui", color: "var(--red)", marginBottom: 10, lineHeight: 1.5 }}>
-                    {lang === "uk"
-                      ? "cloudflared не знайдено. Встанови його (github.com/cloudflare/cloudflared/releases) і спробуй ще раз — без нього доступне лише локальне вікно."
-                      : "cloudflared not found. Install it (github.com/cloudflare/cloudflared/releases) and try again — without it only the local window works."}
+                    {settings?.remoteTunnelProvider === "ngrok"
+                      ? lang === "uk"
+                        ? "ngrok.exe не знайдено. Портативний .exe вже несе його з собою; якщо зібрано з коду вручну, встанови окремо (ngrok.com/download)."
+                        : "ngrok.exe not found. The portable .exe already bundles it; if built from source by hand, install it separately (ngrok.com/download)."
+                      : lang === "uk"
+                        ? "cloudflared не знайдено. Портативний .exe вже несе його з собою; якщо зібрано з коду вручну, встанови окремо (github.com/cloudflare/cloudflared/releases)."
+                        : "cloudflared not found. The portable .exe already bundles it; if built from source by hand, install it separately (github.com/cloudflare/cloudflared/releases)."}
                   </div>
                 ) : null}
                 <button
