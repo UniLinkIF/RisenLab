@@ -239,12 +239,21 @@ fn spawn_cloudflared(tunnel_url: Arc<Mutex<Option<String>>>) -> Option<Child> {
     Some(child)
 }
 
+/// Real bug (owner report, 2026-07-20 — a live screenshot of a dead `api.trycloudflare.com`
+/// page): cloudflared logs SEVERAL `https://…trycloudflare.com` lines before the one that
+/// matters — including its own control-plane API host, `api.trycloudflare.com`, used internally
+/// to register the tunnel. The old substring check (`contains("trycloudflare.com")`) happily
+/// grabbed that one first, since it appears earlier in the log than the actual "Your quick
+/// Tunnel has been created" line. `api.trycloudflare.com` is never a real per-tunnel proxy host —
+/// the assigned one is always a random SUBDOMAIN of trycloudflare.com (e.g.
+/// `random-words-1234.trycloudflare.com`) — so exclude that one specific reserved host by name.
 fn extract_trycloudflare_url(line: &str) -> Option<String> {
     let idx = line.find("https://")?;
     let rest = &line[idx..];
     let end = rest.find(|c: char| c.is_whitespace() || c == '|').unwrap_or(rest.len());
     let candidate = rest[..end].trim_end_matches(['.', ',']);
-    if candidate.contains("trycloudflare.com") {
+    let host = candidate.strip_prefix("https://").unwrap_or(candidate);
+    if host.ends_with(".trycloudflare.com") && host != "api.trycloudflare.com" {
         Some(candidate.to_string())
     } else {
         None
@@ -774,5 +783,31 @@ fn with_game_exe<T: Serialize>(request: tiny_http::Request, state: &AppState, f:
             Err(e) => respond_error(request, 500, e.to_string()),
         },
         None => respond_error(request, 400, "Спершу вкажіть шлях до гри"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn extract_trycloudflare_url_ignores_cloudflared_own_api_host() {
+        // Real log line shape from cloudflared's startup chatter, seen before the actual quick
+        // tunnel is assigned — must NOT be picked up as the tunnel URL (real bug, 2026-07-20: the
+        // owner's app displayed exactly this dead host and nothing worked).
+        assert_eq!(extract_trycloudflare_url("2026-07-20T19:30:00Z INF Requesting new quick Tunnel on https://api.trycloudflare.com/tunnel"), None);
+    }
+
+    #[test]
+    fn extract_trycloudflare_url_accepts_the_real_assigned_subdomain() {
+        assert_eq!(
+            extract_trycloudflare_url("2026-07-20T19:30:01Z INF |  https://random-words-1234.trycloudflare.com                                              |"),
+            Some("https://random-words-1234.trycloudflare.com".to_string())
+        );
+    }
+
+    #[test]
+    fn extract_trycloudflare_url_ignores_lines_with_no_url() {
+        assert_eq!(extract_trycloudflare_url("2026-07-20T19:30:02Z INF Registered tunnel connection"), None);
     }
 }
