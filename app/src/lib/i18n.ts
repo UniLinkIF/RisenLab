@@ -45,6 +45,7 @@ export interface Strings {
   navModels: string;
   navAnimations: string;
   navShowroom: string;
+  navInventory: string;
   navGuide: string;
   navSettings: string;
 }
@@ -90,6 +91,7 @@ const uk: Strings = {
   navModels: "Моделі",
   navAnimations: "Анімації",
   navShowroom: "Вітрина",
+  navInventory: "Інвентар",
   navGuide: "Інструкція",
   navSettings: "Налаштування",
 };
@@ -135,6 +137,7 @@ const en: Strings = {
   navModels: "Models",
   navAnimations: "Animations",
   navShowroom: "Showroom",
+  navInventory: "Inventory",
   navGuide: "Guide",
   navSettings: "Settings",
 };

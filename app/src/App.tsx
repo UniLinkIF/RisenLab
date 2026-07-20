@@ -9,6 +9,7 @@ import Library from "./screens/Library";
 import Models from "./screens/Models";
 import Animations from "./screens/Animations";
 import Showroom from "./screens/Showroom";
+import Inventory from "./screens/Inventory";
 import AiCompare from "./screens/AiCompare";
 import ErrorLog from "./components/ErrorLog";
 import Settings from "./screens/Settings";
@@ -94,6 +95,7 @@ export default function App() {
         {screen === "models" ? <Models lang={lang} onRegenerated={handleRegenerated} onQueueChanged={() => bumpPendingReview(1)} /> : null}
         {screen === "animations" ? <Animations lang={lang} /> : null}
         {screen === "showroom" ? <Showroom lang={lang} /> : null}
+        {screen === "inventory" ? <Inventory lang={lang} /> : null}
         {screen === "guide" ? <Guide lang={lang} /> : null}
         {screen === "settings" ? (
           <Settings lang={lang} onLangChange={changeLang} onSettingsSaved={handleSettingsSaved} />

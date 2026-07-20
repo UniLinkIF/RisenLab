@@ -115,24 +115,39 @@ function buildHall(
   );
   const room2Depth = figureRankZ.mobs - room2Z + mobsRows * FIGURE_SPACING + 3;
 
-  // --- Room 3: provisions & curios — three tables side by side: food, valuables, tools/books. ---
+  // --- Room 3: provisions & curios — four tables side by side: food, valuables, potions,
+  // tools/books. Potions got their own table (2026-07-21, owner request) instead of being
+  // dumped into the generic tools bucket — real Item_Flask_* items (8 total: 4 numbered
+  // potions + Health/Mana/Misc/Empty). ---
   const room3Z = room2Z + room2Depth + ROOM_GAP;
   roomStarts.push({ id: "provisions", label: { uk: "🍞 Припаси й скарби", en: "🍞 Provisions & curios" }, z: room3Z });
   const food = itemsByZone.food;
   const valuables = itemsByZone.valuables;
+  const potions = itemsByZone.potions;
   const tools = itemsByZone.tools;
   const foodCols = 10;
   const valuableCols = 8;
+  const potionCols = 4;
   const toolCols = 10;
   const room3Depth =
-    Math.max(gridRowCount(food.length, foodCols), gridRowCount(valuables.length, valuableCols), gridRowCount(tools.length, toolCols)) * 1.1 + 6;
+    Math.max(
+      gridRowCount(food.length, foodCols),
+      gridRowCount(valuables.length, valuableCols),
+      gridRowCount(potions.length, potionCols),
+      gridRowCount(tools.length, toolCols),
+    ) *
+      1.1 +
+    6;
   gridPositions({ count: food.length, columns: foodCols, cellSize: 1.0, origin: [-16, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
     placed.push({ key: `mesh:${food[i].entryPath}`, kind: "mesh", entry: food[i], position: p, targetSize: 0.6, grounded: true }),
   );
   gridPositions({ count: valuables.length, columns: valuableCols, cellSize: 0.9, origin: [-3, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
     placed.push({ key: `mesh:${valuables[i].entryPath}`, kind: "mesh", entry: valuables[i], position: p, targetSize: 0.4, grounded: true }),
   );
-  gridPositions({ count: tools.length, columns: toolCols, cellSize: 1.0, origin: [8, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
+  gridPositions({ count: potions.length, columns: potionCols, cellSize: 0.8, origin: [8, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
+    placed.push({ key: `mesh:${potions[i].entryPath}`, kind: "mesh", entry: potions[i], position: p, targetSize: 0.5, grounded: true }),
+  );
+  gridPositions({ count: tools.length, columns: toolCols, cellSize: 1.0, origin: [18, 1, room3Z + 3], axis: "floor" }).forEach((p, i) =>
     placed.push({ key: `mesh:${tools[i].entryPath}`, kind: "mesh", entry: tools[i], position: p, targetSize: 0.7, grounded: true }),
   );
 
@@ -148,6 +163,14 @@ export default function Showroom({ lang }: Props) {
   const [textures, setTextures] = useState<LibraryEntry[]>([]);
   const [loaded, setLoaded] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  // Owner request (2026-07-21): see the hall with either the untouched original textures or
+  // whatever AI-remastered variant exists so far. Not gated on review-approval status — "edited"
+  // here means the same thing it does everywhere else in this app (AiCompare, Library thumbnails):
+  // a variant that exists on disk, reviewed or not. Switching modes fully rebuilds the scene
+  // (see the `mode` dependency on the big scene effect below) rather than trying to hot-swap
+  // textures on already-built materials — simpler, and this is an occasional toggle, not a
+  // per-frame concern.
+  const [mode, setMode] = useState<"original" | "remastered">("original");
   const jumpToRoomRef = useRef<((z: number) => void) | null>(null);
 
   useEffect(() => {
@@ -164,7 +187,7 @@ export default function Showroom({ lang }: Props) {
 
   const hall = useMemo(() => {
     if (!meshes || !actors) return null;
-    const itemsByZone: Record<ItemZoneId, MeshEntry[]> = { swords: [], shields: [], weaponsMisc: [], food: [], valuables: [], tools: [] };
+    const itemsByZone: Record<ItemZoneId, MeshEntry[]> = { swords: [], shields: [], weaponsMisc: [], food: [], valuables: [], potions: [], tools: [] };
     for (const m of meshes) {
       const zone = categorizeMesh(m);
       if (zone) itemsByZone[zone].push(m);
@@ -185,10 +208,18 @@ export default function Showroom({ lang }: Props) {
     resolveTextureRef.current = async (baseName: string) => {
       const entry = findTextureEntryForBaseName(textures, baseName);
       if (!entry) return null;
-      const { readTextureDataUrl } = await import("../lib/api");
+      const { readTextureDataUrl, readEditedDataUrl } = await import("../lib/api");
+      if (mode === "remastered") {
+        try {
+          return await readEditedDataUrl(entry.pngRel);
+        } catch {
+          // No AI-approved variant for this particular texture yet — fall back to the
+          // original rather than leaving the material untextured.
+        }
+      }
       return readTextureDataUrl(entry.pngRel);
     };
-  }, [textures]);
+  }, [textures, mode]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -299,8 +330,15 @@ export default function Showroom({ lang }: Props) {
     table1.position.set(0, 0.55, 8);
     scene.add(table1);
     const room3Start = hall.roomStarts.find((r) => r.id === "provisions")?.z ?? hall.totalDepth - 20;
-    for (const x of [-16, -3, 8]) {
-      const t = new THREE.Mesh(new THREE.BoxGeometry(11, 1, 8), tableMat.clone());
+    // food / valuables / potions / tools — potions (2026-07-21) gets a narrower table since it's
+    // only ever 8 real items (Item_Flask_Potion_01-04/Health/Mana/Misc/Empty), not a full row.
+    for (const [x, width] of [
+      [-16, 11],
+      [-3, 11],
+      [8, 5],
+      [18, 11],
+    ] as [number, number][]) {
+      const t = new THREE.Mesh(new THREE.BoxGeometry(width, 1, 8), tableMat.clone());
       t.position.set(x, 0.55, room3Start + 6);
       scene.add(t);
     }
@@ -499,8 +537,12 @@ export default function Showroom({ lang }: Props) {
       container.removeChild(renderer.domElement);
       jumpToRoomRef.current = null;
     };
+    // `mode` is a real dependency, not an oversight: switching original/remastered needs
+    // `resolveTextureRef.current` to already reflect the new mode (the other effect above
+    // updates it synchronously first, same render) AND every material rebuilt from scratch,
+    // since `applyMaterials`' per-name texture-load Promise only ever runs once per material.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hall]);
+  }, [hall, mode]);
 
   const total = hall?.placed.length ?? 0;
 
@@ -516,6 +558,33 @@ export default function Showroom({ lang }: Props) {
           </div>
         </div>
         <div style={{ flex: 1 }} />
+        <div style={{ display: "flex", gap: 6 }}>
+          {(
+            [
+              ["original", lang === "uk" ? "Оригінал" : "Original"],
+              ["remastered", lang === "uk" ? "Ремастед" : "Remastered"],
+            ] as [typeof mode, string][]
+          ).map(([id, label]) => {
+            const active = mode === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setMode(id)}
+                style={{
+                  padding: "7px 14px",
+                  borderRadius: 9,
+                  background: active ? "var(--accent)" : "var(--bg2)",
+                  border: `1px solid ${active ? "var(--accent)" : "var(--border)"}`,
+                  font: "600 11.5px system-ui",
+                  color: active ? "#fff" : "var(--text)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
         {hall?.roomStarts.map((r) => (
           <button
             key={r.id}

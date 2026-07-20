@@ -18,7 +18,7 @@ describe("categorizeMesh", () => {
     expect(categorizeMesh(mesh("Items_Helmets_01", "It_Helmet_01._xmsh"))).toBe("weaponsMisc");
   });
 
-  it("splits the real Items_01 mixed bag by keyword — food vs. valuables vs. tools", () => {
+  it("splits the real Items_01 mixed bag by keyword — food vs. valuables vs. potions vs. tools", () => {
     expect(categorizeMesh(mesh("Items_01", "Item_Bread._xmsh"))).toBe("food");
     expect(categorizeMesh(mesh("Items_01", "Item_Cheese._xmsh"))).toBe("food");
     expect(categorizeMesh(mesh("Items_01", "Item_Meat_Raw._xmsh"))).toBe("food");
@@ -27,6 +27,16 @@ describe("categorizeMesh", () => {
     expect(categorizeMesh(mesh("Items_01", "Item_Necklace_Gold._xmsh"))).toBe("valuables");
     expect(categorizeMesh(mesh("Items_01", "Item_Pickaxe._xmsh"))).toBe("tools");
     expect(categorizeMesh(mesh("Items_01", "Item_Book_Open_01._xmsh"))).toBe("tools");
+  });
+
+  it("gives the real potion/flask items their own zone instead of the generic tools bucket", () => {
+    // Real names confirmed against the owner's connected game, 2026-07-21.
+    expect(categorizeMesh(mesh("Items_01", "Item_Flask_Potion_01._xmsh"))).toBe("potions");
+    expect(categorizeMesh(mesh("Items_01", "Item_Flask_Potion_04._xmsh"))).toBe("potions");
+    expect(categorizeMesh(mesh("Items_01", "Item_Flask_Health._xmsh"))).toBe("potions");
+    expect(categorizeMesh(mesh("Items_01", "Item_Flask_Mana._xmsh"))).toBe("potions");
+    expect(categorizeMesh(mesh("Items_01", "Item_Flask_Misc._xmsh"))).toBe("potions");
+    expect(categorizeMesh(mesh("Items_01", "Item_Flask_Empty._xmsh"))).toBe("potions");
   });
 
   it("Items_Plants_01 goes through the same keyword split as Items_01", () => {

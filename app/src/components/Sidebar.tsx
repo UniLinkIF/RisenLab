@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
 
-export type Screen = "dashboard" | "library" | "models" | "animations" | "showroom" | "guide" | "settings";
+export type Screen = "dashboard" | "library" | "models" | "animations" | "showroom" | "inventory" | "guide" | "settings";
 
 interface Props {
   active: Screen;
@@ -138,6 +138,33 @@ export default function Sidebar({ active, onNavigate, lang }: Props) {
           <div style={{ width: 7, height: 7, borderRadius: "50%", background: active === "showroom" ? "var(--accent)" : "var(--text-faint)" }} />
           <div style={{ width: 16, height: 3, borderRadius: 1, background: active === "showroom" ? "var(--accent)" : "var(--text-faint)" }} />
           <div style={{ width: 10, height: 2, borderRadius: 1, background: active === "showroom" ? "var(--accent)" : "var(--text-faint)" }} />
+        </div>
+      </RailButton>
+
+      <RailButton active={active === "inventory"} title={t(lang).navInventory} onClick={() => onNavigate("inventory")}>
+        {/* A little bag/pouch glyph — distinct from Showroom's pedestal. */}
+        <div
+          style={{
+            width: 13,
+            height: 11,
+            borderRadius: "3px 3px 6px 6px",
+            border: `1.5px solid ${active === "inventory" ? "var(--accent)" : "var(--text-faint)"}`,
+            position: "relative",
+          }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              top: -4,
+              left: "50%",
+              transform: "translateX(-50%)",
+              width: 7,
+              height: 5,
+              borderRadius: "4px 4px 0 0",
+              border: `1.5px solid ${active === "inventory" ? "var(--accent)" : "var(--text-faint)"}`,
+              borderBottom: "none",
+            }}
+          />
         </div>
       </RailButton>
 

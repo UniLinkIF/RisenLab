@@ -17,7 +17,7 @@
 // (confirmed live: not a texture-load timing issue — the pop-in had long finished).
 import type { ActorEntry, MeshEntry } from "./types";
 
-export type ItemZoneId = "swords" | "shields" | "weaponsMisc" | "food" | "valuables" | "tools";
+export type ItemZoneId = "swords" | "shields" | "weaponsMisc" | "food" | "valuables" | "potions" | "tools";
 export type ActorZoneId = "humans" | "monsters" | "mobs";
 
 const FOOD_KEYWORDS = [
@@ -28,12 +28,18 @@ const VALUABLE_KEYWORDS = [
   "gold", "ruby", "diamond", "pearl", "necklace", "ring_", "ring.", "smaragd", "amber", "crystal",
   "goldpile", "goldcoin",
 ];
+// Real names confirmed against the owner's connected game (2026-07-21): Item_Flask_Potion_01-04,
+// Item_Flask_Health, Item_Flask_Mana, Item_Flask_Misc, Item_Flask_Empty — all under Items_01,
+// all sharing the "Flask" name segment. Previously fell into the generic "tools" bucket; owner
+// asked (2026-07-20 session) to see them on their own shelf.
+const POTION_KEYWORDS = ["flask"];
 
 /** Categorizes one `Items_01`/`Items_Plants_01` prop by its own real name — these two folders are
  * a genuine mixed bag (food next to jewelry next to a goldsmith's hammer), so folder alone isn't
  * enough to make a coherent table/shelf. */
 function categorizeProp(name: string): ItemZoneId {
   const lower = name.toLowerCase();
+  if (POTION_KEYWORDS.some((k) => lower.includes(k))) return "potions";
   if (FOOD_KEYWORDS.some((k) => lower.includes(k))) return "food";
   if (VALUABLE_KEYWORDS.some((k) => lower.includes(k))) return "valuables";
   return "tools";
