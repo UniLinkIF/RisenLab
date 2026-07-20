@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import { t } from "../lib/i18n";
-import type { AppSettings, GameCheckResult } from "../lib/types";
-import { backupProject, buildPatches, checkGame, getSettings, installPatches, pickFolder, pickGamePath, saveSettings, uninstallPatches } from "../lib/api";
+import type { AppSettings, GameCheckResult, RemoteStatus } from "../lib/types";
+import { backupProject, buildPatches, checkGame, getRemoteStatus, getSettings, installPatches, isTauri, pickFolder, pickGamePath, saveSettings, startRemoteAccess, stopRemoteAccess, uninstallPatches } from "../lib/api";
 import { formatBytes } from "../lib/library";
 
 interface Props {
@@ -19,10 +19,76 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
   const [error, setError] = useState<string | null>(null);
   const [patchMessage, setPatchMessage] = useState<string | null>(null);
   const [backupMessage, setBackupMessage] = useState<string | null>(null);
+  // Manual build/install split (advanced) is collapsed by default — owner: "не понятно, яка
+  // різниця між текстури в гру і встановити в гру" (2026-07-20). The primary flow is one
+  // button ("🚀 Текстури в гру"); the two-step version underneath only matters if you want to
+  // build without installing yet (e.g. to peek at the .pXX files before they touch the game).
+  const [showAdvancedPatch, setShowAdvancedPatch] = useState(false);
+  const [remote, setRemote] = useState<RemoteStatus | null>(null);
+  const [remoteBusy, setRemoteBusy] = useState(false);
+  const remotePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     getSettings().then(setSettings);
   }, []);
+
+  // Remote access status (see app/src-tauri/src/remote.rs) — Tauri-only, no dev-bridge
+  // equivalent. Polled while the server is running because the tunnel URL isn't known the
+  // instant the server starts (cloudflared takes a couple seconds to hand one out).
+  useEffect(() => {
+    if (!isTauri()) return;
+    getRemoteStatus()
+      .then((r) => {
+        setRemote(r);
+        if (r.running && !r.tunnelUrl) startRemotePolling();
+      })
+      .catch(() => {});
+    return () => {
+      if (remotePollRef.current) clearInterval(remotePollRef.current);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function startRemotePolling() {
+    if (remotePollRef.current) return;
+    remotePollRef.current = setInterval(async () => {
+      const r = await getRemoteStatus().catch(() => null);
+      if (!r) return;
+      setRemote(r);
+      if (!r.running || r.tunnelUrl) {
+        if (remotePollRef.current) clearInterval(remotePollRef.current);
+        remotePollRef.current = null;
+      }
+    }, 1500);
+  }
+
+  async function handleStartRemote() {
+    setRemoteBusy(true);
+    try {
+      const r = await startRemoteAccess();
+      setRemote(r);
+      if (!r.tunnelUrl) startRemotePolling();
+    } catch (e) {
+      setRemote({ running: false, port: null, token: null, tunnelUrl: null, cloudflaredAvailable: false });
+      setError(String(e));
+    } finally {
+      setRemoteBusy(false);
+    }
+  }
+
+  async function handleStopRemote() {
+    setRemoteBusy(true);
+    try {
+      await stopRemoteAccess();
+      setRemote({ running: false, port: null, token: null, tunnelUrl: null, cloudflaredAvailable: remote?.cloudflaredAvailable ?? false });
+      if (remotePollRef.current) {
+        clearInterval(remotePollRef.current);
+        remotePollRef.current = null;
+      }
+    } finally {
+      setRemoteBusy(false);
+    }
+  }
 
   async function persist(next: AppSettings) {
     setSettings(next);
@@ -302,13 +368,15 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
             />
           </div>
           {(settings.aiProvider ?? "replicate") === "replicate" ? (
+          <>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{ width: 130, flexShrink: 0, font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
               {lang === "uk" ? "Модель" : "Model"}
             </div>
             <input
               value={settings.aiModel ?? ""}
-              placeholder="nightmareai/real-esrgan"
+              placeholder="owner/model-name (будь-яка модель Replicate)"
+              title={lang === "uk" ? "Впиши БУДЬ-ЯКУ модель з replicate.com у форматі owner/name — не лише пресети нижче." : "Type ANY model from replicate.com as owner/name — not just the presets below."}
               onChange={(e) => persistDebounced({ ...settings, aiModel: e.target.value.trim() || null })}
               style={{ flex: 1, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, padding: "9px 12px", font: "500 12px ui-monospace, Menlo, monospace", color: "var(--text)" }}
             />
@@ -329,12 +397,43 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               );
             })}
           </div>
-          ) : null}
-          <div style={{ font: "500 11px system-ui", color: "var(--text-faint)", marginTop: 8, lineHeight: 1.5 }}>
+          <div style={{ font: "500 11px system-ui", color: "var(--text-faint)", marginTop: 6, marginBottom: 10, lineHeight: 1.5 }}>
             {lang === "uk"
-              ? "Порожньо = точне збільшення (real-esrgan, без промпту). Можна вказати будь-яку img2img-модель Replicate (owner/name) — тоді застосуються промпти за категорією текстури (шкіра/метал/камінь/тканина…)."
-              : "Empty = faithful upscale (real-esrgan, no prompt). Any Replicate img2img model (owner/name) switches to category prompts (skin/metal/stone/cloth…)."}
+              ? "Порожньо = точне збільшення (real-esrgan, без промпту). Кнопки вище — лише швидкі пресети; поле моделі й повзунок нижче можна міняти незалежно від них, для будь-якої img2img-моделі Replicate."
+              : "Empty = faithful upscale (real-esrgan, no prompt). The buttons above are just quick presets — the model field and slider below can be set independently of them, for any Replicate img2img model."}
           </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+            <div style={{ width: 130, flexShrink: 0, font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
+              {lang === "uk" ? "Креативність" : "Creativity"}
+            </div>
+            <input
+              type="range"
+              min={0.1}
+              max={0.9}
+              step={0.05}
+              value={settings.aiCreativity ?? 0.6}
+              title={
+                lang === "uk"
+                  ? "Наскільки ШІ може відхилятись від оригіналу (деталізатора resemblance/сили img2img strength). Низько = обережно, високо = сміливо."
+                  : "How far the AI may diverge from the original (drives the upscaler's resemblance / img2img strength). Low = cautious, high = bold."
+              }
+              onChange={(e) => persistDebounced({ ...settings, aiCreativity: Number(e.target.value) })}
+              style={{ flex: 1 }}
+            />
+            <div style={{ width: 36, textAlign: "right", font: "600 12px ui-monospace, Menlo, monospace", color: "var(--text-dim)" }}>
+              {(settings.aiCreativity ?? 0.6).toFixed(2)}
+            </div>
+          </div>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
+            <input
+              type="checkbox"
+              checked={Boolean(settings.aiRegenerate)}
+              onChange={(e) => persist({ ...settings, aiRegenerate: e.target.checked })}
+            />
+            {lang === "uk" ? "✨ Режим «Нові текстури» (перемалювати, не лише деталізувати)" : "✨ “New textures” mode (repaint, not just detail)"}
+          </label>
+          </>
+          ) : null}
         </div>
 
         <div style={{ background: "var(--bg1)", border: "1px solid var(--border)", borderRadius: 14, padding: 20 }}>
@@ -368,25 +467,14 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
               <button
                 onClick={onShipToGame}
                 disabled={!settings.gameExe}
-                title={lang === "uk" ? "Одна кнопка: прийняті текстури → мінімальні патчі → одразу в теку гри. Запускай гру і дивись." : "One click: approved textures → minimal patches → straight into the game folder."}
+                title={
+                  lang === "uk"
+                    ? "Одна кнопка робить усе: прийняті текстури → мінімальні патчі → одразу в теку гри. Це те, що тобі потрібно у 99% випадків."
+                    : "One button does everything: approved textures → minimal patches → straight into the game folder. What you want 99% of the time."
+                }
                 style={{ padding: "8px 16px", borderRadius: 9, background: "var(--green)", border: "none", font: "700 12px system-ui", color: "#0c1f10", opacity: settings.gameExe ? 1 : 0.5 }}
               >
                 {lang === "uk" ? "🚀 Текстури в гру" : "🚀 Ship to game"}
-              </button>
-              <button onClick={onBuildPatch} style={{ padding: "8px 16px", borderRadius: 9, background: "var(--accent)", border: "none", font: "600 12px system-ui", color: "#fff" }}>
-                {s.buildPatch}
-              </button>
-              <button
-                onClick={onInstallPatches}
-                disabled={!settings.gameExe}
-                title={
-                  lang === "uk"
-                    ? "Скопіювати всі зібрані .pXX у теку гри (data/compiled, data/common). Відкат — «Прибрати з гри»."
-                    : "Copy all built .pXX volumes into the game's data folders. Revert with “Remove from game”."
-                }
-                style={{ padding: "8px 16px", borderRadius: 9, background: "var(--bg2)", border: "1px solid var(--accent)", font: "600 12px system-ui", color: "var(--text)", opacity: settings.gameExe ? 1 : 0.5 }}
-              >
-                {lang === "uk" ? "🎮 Встановити в гру" : "🎮 Install into game"}
               </button>
               <button
                 onClick={onUninstallPatches}
@@ -403,6 +491,48 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
             </div>
           </div>
           {patchMessage ? <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-faint)", wordBreak: "break-all" }}>{patchMessage}</div> : null}
+          <button
+            onClick={() => setShowAdvancedPatch((v) => !v)}
+            style={{ marginTop: 10, padding: 0, background: "none", border: "none", font: "600 11px system-ui", color: "var(--text-faint)", cursor: "pointer" }}
+          >
+            {showAdvancedPatch
+              ? lang === "uk" ? "▾ Розширено: зібрати й встановити окремо" : "▾ Advanced: build and install separately"
+              : lang === "uk" ? "▸ Розширено: зібрати й встановити окремо" : "▸ Advanced: build and install separately"}
+          </button>
+          {showAdvancedPatch ? (
+            <div style={{ marginTop: 8, padding: 12, background: "var(--bg2)", borderRadius: 10 }}>
+              <div style={{ font: "500 11.5px system-ui", color: "var(--text-faint)", marginBottom: 10, lineHeight: 1.5 }}>
+                {lang === "uk"
+                  ? "«🚀 Текстури в гру» вище вже робить ці два кроки одним кліком. Розділяй їх лише якщо хочеш зібрати патч-файли (.pXX), не встановлюючи їх у гру одразу — наприклад щоб подивитись файли перед тим, як щось зачепити."
+                  : "“🚀 Ship to game” above already does both these steps in one click. Split them only if you want to build the patch (.pXX) files without installing them into the game right away — e.g. to inspect the files before touching anything."}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={onBuildPatch}
+                  title={
+                    lang === "uk"
+                      ? "Крок 1/2: пакує прийняті текстури у .pXX файли в теку «Патчі» вище — гру НЕ чіпає."
+                      : "Step 1/2: packs approved textures into .pXX files in the “Patches” folder above — does NOT touch the game."
+                  }
+                  style={{ padding: "8px 16px", borderRadius: 9, background: "var(--accent)", border: "none", font: "600 12px system-ui", color: "#fff" }}
+                >
+                  {lang === "uk" ? "1️⃣ Зібрати патч" : "1️⃣ Build patch"}
+                </button>
+                <button
+                  onClick={onInstallPatches}
+                  disabled={!settings.gameExe}
+                  title={
+                    lang === "uk"
+                      ? "Крок 2/2: копіює ВЖЕ ЗІБРАНІ .pXX з теки «Патчі» у теку гри. Якщо нічого не зібрано — робити нічого."
+                      : "Step 2/2: copies the ALREADY-BUILT .pXX files from the “Patches” folder into the game folder. No-op if nothing's been built yet."
+                  }
+                  style={{ padding: "8px 16px", borderRadius: 9, background: "var(--bg1)", border: "1px solid var(--accent)", font: "600 12px system-ui", color: "var(--text)", opacity: settings.gameExe ? 1 : 0.5 }}
+                >
+                  {lang === "uk" ? "2️⃣ Встановити в гру" : "2️⃣ Install into game"}
+                </button>
+              </div>
+            </div>
+          ) : null}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0 0" }}>
             <div style={{ font: "500 12.5px system-ui", color: "var(--text-dim)" }}>
               {lang === "uk" ? "Резервна копія проєкту" : "Project backup"}
@@ -413,6 +543,83 @@ export default function Settings({ lang, onLangChange, onSettingsSaved }: Props)
           </div>
           {backupMessage ? <div style={{ marginTop: 8, fontSize: 12, color: "var(--text-faint)", wordBreak: "break-all" }}>{backupMessage}</div> : null}
         </div>
+
+        {isTauri() ? (
+          <div style={{ background: "var(--bg1)", border: "1px solid var(--border)", borderRadius: 14, padding: 20 }}>
+            <div style={{ font: "600 11px system-ui", letterSpacing: ".04em", textTransform: "uppercase", color: "var(--text-faint)", marginBottom: 12 }}>
+              {lang === "uk" ? "Віддалений доступ" : "Remote access"}
+            </div>
+            <div style={{ font: "500 12px system-ui", color: "var(--text-faint)", marginBottom: 12, lineHeight: 1.5 }}>
+              {lang === "uk"
+                ? "Дай колезі посилання — воно відкриє цей застосунок у будь-якому браузері, з тими самими реальними даними, поки цей комп'ютер увімкнений і застосунок відкритий. Потребує встановленого cloudflared (безкоштовний, від Cloudflare) — застосунок його не завантажує сам."
+                : "Give a colleague a link — it opens this app in any browser, with the same real data, as long as this computer is on and the app is open. Needs cloudflared installed (free, from Cloudflare) — this app doesn't download it for you."}
+            </div>
+            {remote?.running ? (
+              <>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--green)", flexShrink: 0 }} />
+                  <div style={{ font: "600 12.5px system-ui", color: "var(--text)" }}>
+                    {lang === "uk" ? "Увімкнено" : "Running"}
+                  </div>
+                </div>
+                {remote.tunnelUrl && remote.token ? (
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                    <div
+                      style={{
+                        flex: 1,
+                        background: "var(--bg2)",
+                        border: "1px solid var(--border)",
+                        borderRadius: 8,
+                        padding: "9px 12px",
+                        font: "500 11.5px ui-monospace, Menlo, monospace",
+                        color: "var(--text)",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {`${remote.tunnelUrl}/?token=${remote.token}`}
+                    </div>
+                    <button
+                      onClick={() => navigator.clipboard.writeText(`${remote.tunnelUrl}/?token=${remote.token}`)}
+                      style={{ padding: "9px 14px", borderRadius: 8, background: "var(--accent)", border: "none", font: "600 12px system-ui", color: "#fff", whiteSpace: "nowrap" }}
+                    >
+                      {lang === "uk" ? "Копіювати" : "Copy"}
+                    </button>
+                  </div>
+                ) : (
+                  <div style={{ font: "500 12px system-ui", color: "var(--text-faint)", marginBottom: 10 }}>
+                    {lang === "uk" ? "Створюю тунель…" : "Setting up the tunnel…"}
+                  </div>
+                )}
+                <button
+                  onClick={handleStopRemote}
+                  disabled={remoteBusy}
+                  style={{ padding: "8px 16px", borderRadius: 9, background: "var(--bg2)", border: "1px solid var(--border)", font: "600 12px system-ui", color: "var(--text-dim)", opacity: remoteBusy ? 0.6 : 1 }}
+                >
+                  {lang === "uk" ? "Вимкнути" : "Turn off"}
+                </button>
+              </>
+            ) : (
+              <>
+                {remote && !remote.cloudflaredAvailable ? (
+                  <div style={{ font: "500 12px system-ui", color: "var(--red)", marginBottom: 10, lineHeight: 1.5 }}>
+                    {lang === "uk"
+                      ? "cloudflared не знайдено. Встанови його (github.com/cloudflare/cloudflared/releases) і спробуй ще раз — без нього доступне лише локальне вікно."
+                      : "cloudflared not found. Install it (github.com/cloudflare/cloudflared/releases) and try again — without it only the local window works."}
+                  </div>
+                ) : null}
+                <button
+                  onClick={handleStartRemote}
+                  disabled={remoteBusy}
+                  style={{ padding: "8px 16px", borderRadius: 9, background: "var(--accent)", border: "none", font: "700 12px system-ui", color: "#fff", opacity: remoteBusy ? 0.6 : 1 }}
+                >
+                  {remoteBusy ? s.loading : lang === "uk" ? "🌐 Увімкнути" : "🌐 Turn on"}
+                </button>
+              </>
+            )}
+          </div>
+        ) : null}
       </div>
     </div>
   );

@@ -17,3 +17,13 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 rfd = "0.17.2"
+# Remote access (see remote.rs): a small, synchronous, dependency-light HTTP server — no tokio/
+# async runtime needed, consistent with the rest of this codebase's "shell out / plain blocking
+# I/O over a full framework" bias (see src/ai.rs's curl.exe note).
+tiny_http = "0.12"
+# Embeds the built frontend (`../dist`) into the binary at compile time, so the remote HTTP
+# server can serve the real UI without any runtime path resolution into Tauri's own bundled
+# resources (whose exact layout/API this avoids depending on). Requires `../dist` to exist
+# when `src-tauri` is compiled — see the CI workflow's "Build frontend" step, which now runs
+# before `cargo test`/`cargo build` for exactly this reason.
+include_dir = "0.7"

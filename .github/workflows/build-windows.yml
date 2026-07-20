@@ -23,6 +23,14 @@ jobs:
         working-directory: app
         run: npm ci
 
+      # remote.rs embeds `../dist` into the binary at compile time (`include_dir!`), so it must
+      # exist before `src-tauri` compiles AT ALL — including for `cargo test` below, which
+      # otherwise ran before the frontend was ever built. `npx tauri build` below rebuilds this
+      # again via its own beforeBuildCommand; that's a harmless, idempotent re-run.
+      - name: Build frontend
+        working-directory: app
+        run: npm run build
+
       # The sandbox this project is normally developed in can't compile src-tauri at all (no
       # dlltool/MinGW binutils) — this is the ONLY place `logic.rs`'s tests (settings
       # round-trip, review-status, etc.) actually run. Catches the exact class of bug that
