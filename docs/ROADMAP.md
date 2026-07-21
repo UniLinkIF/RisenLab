@@ -64,9 +64,14 @@ App (`app/`, Tauri + React + three.js):
 - **In-game animation-patch verification is still open.** The texture-patch install path has
   been run at least once; there's no equivalent confirmation yet that the animation-quality
   transforms/patches look right running in real Risen, only in the app's own viewers.
-- **`obj-to-mesh` in `mimicry-helper`** (the import direction — OBJ back into the game's mesh
-  format) writes a file that doesn't re-parse. Not root-caused. `mesh-to-obj`/`material-dump`
-  (export direction) are solid.
+- ~~`obj-to-mesh` in `mimicry-helper` writes a file that doesn't re-parse~~ — **fixed 2026-07-18**
+  in that sibling repo (3 root causes: a truncated vertex-declaration table, a MaterialName
+  property size field silently widened to 8 bytes, a misplaced 56-byte zero block before the
+  vertex-stream size), CI-verified via a real obj-to-mesh → mesh-to-obj round-trip smoke test on
+  a real Windows+MinGW runner. This RisenLab repo doesn't need any change for it — `mesh-to-obj`/
+  `material-dump` (export direction) were already solid; this closes the one remaining gap in
+  that trio. (Stale entry corrected 2026-07-21 — the fix had already shipped, this file just
+  hadn't been updated to say so.)
 - **Titan "~10% black patches during animation"** — open, blocked on the owner reproducing it
   with a screenshot; every numeric diagnostic (materials/normals/weights/UV/unswizzle) has come
   back clean so far, so whatever's left is likely a render-state issue, not a data one.
