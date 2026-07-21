@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveScenarios } from "./scenarios";
+import { deriveScenarios, matchScenariosForItemName } from "./scenarios";
 import type { MotionEntry } from "./types";
 
 const INTERACTS = "_emfx36/Humans/Animations/Interacts";
@@ -74,5 +74,30 @@ describe("deriveScenarios", () => {
     ];
     const scenarios = deriveScenarios(motions);
     expect(scenarios[0].clips[0].name).toBe("Hero_Stand_None_None_P0_PlayGuitar_Loop_N_Fwd_00_%_00_P0_0._xmot");
+  });
+});
+
+describe("matchScenariosForItemName", () => {
+  const motions = [
+    clip("Hero_Stand_None_None_P0_SitGround_Begin_N_Fwd_00_%_00_P0_0._xmot"),
+    clip("Hero_SitGround_None_None_P0_Stand_Begin_N_Fwd_00_%_00_P0_0._xmot"),
+    clip("Hero_SitGround_None_None_P0_PlayFlute_Begin_N_Fwd_00_%_00_P0_0._xmot"),
+    clip("Hero_SitGround_None_None_P0_PlayFlute_Loop_N_Fwd_00_%_00_P0_0._xmot"),
+    clip("Hero_Stand_None_None_P0_PlayGuitar_Loop_N_Fwd_00_%_00_P0_0._xmot"),
+  ];
+  const scenarios = deriveScenarios(motions);
+
+  it("matches a real item name to the scenario whose action names it", () => {
+    const matches = matchScenariosForItemName(scenarios, "Item_Flute._xmsh");
+    expect(matches.map((s) => s.label)).toEqual(["🎭 Play Flute (Sit Ground)"]);
+  });
+
+  it("ignores noise tokens (Item_/numbers/condition words) that would otherwise false-match", () => {
+    const matches = matchScenariosForItemName(scenarios, "Item_Meat_Raw_01._xmsh");
+    expect(matches).toEqual([]); // no ConsumeMeat scenario in this small fixture — proves "raw"/"01" aren't matching anything spuriously
+  });
+
+  it("returns no matches for an item with no corresponding scenario — a real, informative answer", () => {
+    expect(matchScenariosForItemName(scenarios, "It_Wpn_TraitorSword._xmsh")).toEqual([]);
   });
 });

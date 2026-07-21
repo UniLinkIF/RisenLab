@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
-import type { LibraryEntry, MeshEntry } from "../lib/types";
-import { listLibrary, listMeshes, meshObjUrl, readTextureDataUrl } from "../lib/api";
+import type { LibraryEntry, MeshEntry, MotionEntry } from "../lib/types";
+import { listLibrary, listMeshes, listMotions, meshObjUrl, readTextureDataUrl } from "../lib/api";
 import { filterEntries } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import { categorizeMesh, type ItemZoneId } from "../lib/showroomCategorize";
+import { deriveScenarios, matchScenariosForItemName } from "../lib/scenarios";
 import Model3DViewer, { type ViewMode } from "../components/Model3DViewer";
 import SearchableList from "../components/SearchableList";
 
@@ -52,6 +53,7 @@ const MODE_LABEL: Record<ViewMode, { uk: string; en: string }> = {
 export default function Inventory({ lang }: Props) {
   const [meshes, setMeshes] = useState<MeshEntry[]>([]);
   const [textures, setTextures] = useState<LibraryEntry[]>([]);
+  const [motions, setMotions] = useState<MotionEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   const [category, setCategory] = useState<Category>("weapons");
@@ -69,7 +71,18 @@ export default function Inventory({ lang }: Props) {
     listLibrary()
       .then(setTextures)
       .catch(() => {});
+    // Same real-body-clip filter Animations.tsx uses (archiveStem "animations", not the
+    // per-line speech/lip-sync archives) — feeds `deriveScenarios` below.
+    listMotions()
+      .then((all) => setMotions(all.filter((m) => m.archiveStem === "animations")))
+      .catch(() => {});
   }, []);
+
+  // Owner request (2026-07-21): "додай сценарії до кожного ітема, щоб читати що закодовано" —
+  // which of the Hero's real scenarios (see lib/scenarios.ts) this item's own name plausibly
+  // encodes. Most items (weapons, tools) have none — a real, informative answer, not a bug.
+  const scenarios = useMemo(() => deriveScenarios(motions), [motions]);
+  const matchedScenarios = useMemo(() => (selected ? matchScenariosForItemName(scenarios, selected.name) : []), [scenarios, selected]);
 
   const itemsByCategory = useMemo(() => {
     const out: Record<Category, MeshEntry[]> = { weapons: [], potions: [], food: [], valuables: [], tools: [] };
@@ -181,6 +194,28 @@ export default function Inventory({ lang }: Props) {
                 ? "Реальні предмети інвентаря гри, згруповані по слоту — перегляд, поки без дій."
                 : "Real in-game inventory items, grouped by slot — browsing only for now."}
             </div>
+            {selected ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                <span style={{ font: "600 10px system-ui", letterSpacing: ".04em", textTransform: "uppercase", color: "var(--text-faint)" }}>
+                  {lang === "uk" ? "Закодовані сценарії:" : "Encoded scenarios:"}
+                </span>
+                {matchedScenarios.length > 0 ? (
+                  matchedScenarios.map((s) => (
+                    <span
+                      key={s.id}
+                      title={lang === "uk" ? "Переглянути живо: вкладка «Анімації» → цей же напис у списку" : "Watch it live: Animations tab → this same label in the list"}
+                      style={{ padding: "3px 9px", borderRadius: 10, background: "var(--accent-tint)", font: "600 11px system-ui", color: "var(--text)" }}
+                    >
+                      {s.label}
+                    </span>
+                  ))
+                ) : (
+                  <span style={{ font: "500 11px system-ui", color: "var(--text-faint)" }}>
+                    {lang === "uk" ? "немає (цей предмет не бере участі в жодному відомому сценарії)" : "none (this item isn't part of any known scenario)"}
+                  </span>
+                )}
+              </div>
+            ) : null}
           </div>
           <div style={{ flex: 1 }} />
           <div style={{ display: "flex", gap: 6 }}>

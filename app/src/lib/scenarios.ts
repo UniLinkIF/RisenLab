@@ -144,3 +144,24 @@ export function deriveScenarios(motions: MotionEntry[]): ScenarioDef[] {
 
   return scenarios.sort((a, b) => a.label.localeCompare(b.label));
 }
+
+/** Noise tokens real item file names carry that never say anything about WHICH scenario an
+ * item is for (generic prefix, numbered variant, condition/state suffix). */
+const ITEM_NAME_NOISE = new Set(["item", "raw", "fried", "misc", "empty", "none", "old", "new"]);
+
+/** Which already-derived scenarios an inventory item's own real name plausibly encodes — owner
+ * request (2026-07-21): "додай сценарії до кожного ітема, щоб читати що закодовано в тому чи
+ * іншому об'єкті" (show scenarios per item, so we can read what's encoded in each object).
+ * Matches by substring on the item's own meaningful name tokens against each scenario's real
+ * action label — e.g. `Item_Flute` -> token "flute" -> matches "🎭 Play Flute (Sit Ground)".
+ * A real, useful answer can also be "nothing" (most items — weapons, tools — have no matching
+ * Interacts clip at all; that's informative too, not a bug). */
+export function matchScenariosForItemName(scenarios: ScenarioDef[], itemName: string): ScenarioDef[] {
+  const stem = itemName.replace(/\._xmsh$/i, "");
+  const tokens = stem
+    .split("_")
+    .map((t) => t.toLowerCase())
+    .filter((t) => t.length > 2 && !ITEM_NAME_NOISE.has(t) && !/^\d+$/.test(t));
+  if (tokens.length === 0) return [];
+  return scenarios.filter((s) => tokens.some((t) => s.label.toLowerCase().includes(t)));
+}
