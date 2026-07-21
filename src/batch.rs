@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{anyhow, bail, Context, Result};
 use serde::Serialize;
 
-use crate::{content, dds, gamepath, pak, ximg, xmac, xmesh_skin, xmot};
+use crate::{content, dds, gamepath, pak, tple, ximg, xmac, xmesh_skin, xmot};
 
 const MANIFEST_NAME: &str = "manifest.tsv";
 
@@ -492,10 +492,15 @@ pub fn actor_to_obj_from_archive(archive_path: &Path, entry_path: &str, out_dir:
 fn read_raw_entry_bytes(archive_path: &Path, entry_path: &str) -> Result<Vec<u8>> {
     let mut archive = pak::PakArchive::open(archive_path)
         .with_context(|| format!("opening {}", archive_path.display()))?;
+    // Accept the entry path with or without a leading slash — every real archive stores
+    // paths with one, but a caller retyping one by hand (or a shell that strips/mangles a
+    // literal leading slash, as MSYS bash does when it mistakes it for a POSIX absolute path)
+    // shouldn't have to get that exactly right.
+    let wanted = entry_path.trim_start_matches('/');
     let entry = archive
         .files()
         .into_iter()
-        .find(|f| f.path == entry_path)
+        .find(|f| f.path.trim_start_matches('/') == wanted)
         .ok_or_else(|| anyhow!("entry {entry_path} not found in {}", archive_path.display()))?;
     Ok(archive.read_file(&entry)?)
 }
@@ -516,6 +521,15 @@ pub fn actor_skeleton(archive_path: &Path, entry_path: &str) -> Result<Vec<xmac:
 pub fn motion_tracks(archive_path: &Path, entry_path: &str, bone_names: &[String]) -> Result<Vec<xmot::BoneMotion>> {
     let data = read_raw_entry_bytes(archive_path, entry_path)?;
     xmot::parse_motion(&data, bone_names)
+}
+
+/// One item or world object's real `CanInteractScript`/`PreInteractScript`/`InteractScript`/
+/// `PostInteractScript` bindings, read straight out of its `._tple` template (`templates.pak`) —
+/// see `tple.rs` for why a `Some(name)` that isn't a real compiled function (like the flute's
+/// own `PreInventoryUse_Player`) is exactly the kind of leftover bug this exists to surface.
+pub fn template_script_bindings(archive_path: &Path, entry_path: &str) -> Result<Vec<tple::ScriptBinding>> {
+    let data = read_raw_entry_bytes(archive_path, entry_path)?;
+    Ok(tple::scan_script_bindings(&data))
 }
 
 /// Is this file name a `.pNN` patch volume (`p` followed by all digits)? Shared by

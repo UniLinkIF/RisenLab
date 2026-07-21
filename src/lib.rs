@@ -4,6 +4,7 @@ pub mod content;
 pub mod dds;
 pub mod gamepath;
 pub mod pak;
+pub mod tple;
 pub mod ximg;
 pub mod xmac;
 pub mod xmesh_skin;

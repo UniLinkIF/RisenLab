@@ -135,6 +135,12 @@ enum Commands {
     /// Prints one actor's real bone hierarchy (name/parent/bind-pose transform) as JSON,
     /// parsed directly from the `._xmac` bytes — no `mimicry-helper.exe` involved.
     ActorSkeleton { archive: PathBuf, entry_path: String },
+    /// Prints one item/object template's real CanInteractScript/PreInteractScript/
+    /// InteractScript/PostInteractScript bindings as JSON, read straight from its `._tple`
+    /// bytes (`templates.pak`). A binding whose value doesn't correspond to any real compiled
+    /// function (unverifiable from this alone — cross-check against the game's own binaries)
+    /// is exactly the kind of leftover bug that leaves an item doing nothing when used.
+    TemplateScriptBindings { archive: PathBuf, entry_path: String },
     /// Prints one motion clip's real per-bone keyframe tracks as JSON, for each bone name in
     /// `bone_names_json` (a JSON array of strings — typically every name from `actor-skeleton`).
     /// `smooth` > 0 applies the jitter-cleanup filter (`xmot::smooth_tracks`); `expressiveness`/
@@ -497,6 +503,10 @@ fn main() -> anyhow::Result<()> {
         Commands::ActorSkeleton { archive, entry_path } => {
             let nodes = batch::actor_skeleton(&archive, &entry_path)?;
             println!("{}", serde_json::to_string(&nodes)?);
+        }
+        Commands::TemplateScriptBindings { archive, entry_path } => {
+            let bindings = batch::template_script_bindings(&archive, &entry_path)?;
+            println!("{}", serde_json::to_string(&bindings)?);
         }
         Commands::MotionTracks {
             archive,
