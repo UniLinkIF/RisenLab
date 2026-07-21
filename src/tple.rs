@@ -115,6 +115,23 @@ fn read_tokens(data: &[u8]) -> Vec<(usize, String)> {
     tokens
 }
 
+/// Reads a plain `bCString`-typed property's value — e.g. `MeshFileName`, always present and
+/// always real (unlike the script hooks above, a mesh reference can't silently be "wrong" the
+/// same way, since a bad one would fail to render rather than just do nothing) — real bytes look
+/// like `[name]["bCString" type marker][the actual string value]`, so unlike a script hook (whose
+/// bound value directly follows its name, no type marker in between when set) this one has a
+/// fixed type-marker token to skip over first. Used to match a browsable mesh (e.g.
+/// `Item_Flute.xmsh`) back to the `.tple` template that actually governs its interactions.
+pub fn find_string_property(data: &[u8], property_name: &str) -> Option<String> {
+    let tokens = read_tokens(data);
+    let idx = tokens.iter().position(|(_, name)| name == property_name)?;
+    let (_, type_marker) = tokens.get(idx + 1)?;
+    if type_marker != "bCString" {
+        return None;
+    }
+    tokens.get(idx + 2).map(|(_, value)| value.clone())
+}
+
 /// Scans a `.tple` file for the four interaction script hooks (`CanInteractScript`,
 /// `PreInteractScript`, `InteractScript`, `PostInteractScript`) and reports each one found, with
 /// its bound value if any. Every occurrence is reported (a `Slots` array can hold more than one
@@ -184,6 +201,18 @@ mod tests {
         assert_eq!(found[0].bound_value, None);
         // The last one has no successor token at all — must not panic, must report unbound.
         assert_eq!(found[1].bound_value, None);
+    }
+
+    #[test]
+    fn find_string_property_reads_mesh_file_name() {
+        let data = token_stream(&["MeshFileName", "bCString", "Item_Flute.xmsh", "MaterialSwitch"]);
+        assert_eq!(find_string_property(&data, "MeshFileName").as_deref(), Some("Item_Flute.xmsh"));
+    }
+
+    #[test]
+    fn find_string_property_missing_returns_none() {
+        let data = token_stream(&["MeshFileName", "bCString", "Item_Flute.xmsh"]);
+        assert_eq!(find_string_property(&data, "NoSuchProperty"), None);
     }
 
     #[test]

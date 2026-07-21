@@ -119,6 +119,16 @@ enum Commands {
     /// across every archive as JSON — instant. Keyframe playback isn't implemented yet, this is
     /// browsing only.
     ListMotions { exe_or_shortcut: PathBuf },
+    /// Point at the game (exe or .lnk) and list every real `.tple` item/object template
+    /// (`templates.pak`) across every archive as JSON — instant, no decoding.
+    ListTemplates { exe_or_shortcut: PathBuf },
+    /// Finds the `.tple` template whose own `MeshFileName` matches `mesh_file_name` (e.g.
+    /// `Item_Flute.xmsh`) and prints its `list-templates`-shaped entry as JSON, or `null` if no
+    /// template references that mesh.
+    FindTemplateForMesh {
+        exe_or_shortcut: PathBuf,
+        mesh_file_name: String,
+    },
     /// Reads the `.mtl` sibling of an already-converted `.obj` (from `mesh-to-obj-from-archive`/
     /// `actor-to-obj-from-archive`) and prints the real diffuse/normal texture file names its
     /// material(s) reference, as JSON — the real auto-texture-match data, not a name guess.
@@ -491,6 +501,14 @@ fn main() -> anyhow::Result<()> {
         Commands::ListMotions { exe_or_shortcut } => {
             let entries = batch::list_motions(&exe_or_shortcut)?;
             println!("{}", serde_json::to_string(&entries)?);
+        }
+        Commands::ListTemplates { exe_or_shortcut } => {
+            let entries = batch::list_templates(&exe_or_shortcut)?;
+            println!("{}", serde_json::to_string(&entries)?);
+        }
+        Commands::FindTemplateForMesh { exe_or_shortcut, mesh_file_name } => {
+            let found = batch::find_template_for_mesh(&exe_or_shortcut, &mesh_file_name)?;
+            println!("{}", serde_json::to_string(&found)?);
         }
         Commands::MeshTextureRefs { obj_path } => {
             let refs = batch::read_material_texture_refs(&obj_path)?;

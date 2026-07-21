@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { Lang } from "../lib/i18n";
 import type { LibraryEntry, MeshEntry, MotionEntry } from "../lib/types";
-import { listLibrary, listMeshes, listMotions, meshObjUrl, readTextureDataUrl } from "../lib/api";
+import type { ScriptBinding } from "../lib/types";
+import { findTemplateForMesh, listLibrary, listMeshes, listMotions, meshObjUrl, readTextureDataUrl, templateScriptBindings } from "../lib/api";
 import { filterEntries } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import { categorizeMesh, type ItemZoneId } from "../lib/showroomCategorize";
@@ -48,9 +49,14 @@ const MODE_LABEL: Record<ViewMode, { uk: string; en: string }> = {
  * uses — assigns a zone to), grouped by inventory slot rather than by raw archive folder like
  * Models does. Pure browsing for now: no texture regeneration here (that's Models' job) — this
  * is groundwork for the owner's bigger idea (click an item → the hero performs an NPC-style
- * routine), which real research (2026-07-21) found needs a lot more reverse-engineering of the
- * game's compiled script/dialogue layer (`data/compiled/library.pak`'s `.xinf`/`.xqst` catalogs)
- * before it's buildable — not started, see memory. */
+ * routine in the REAL game, not just this viewer). Real research (2026-07-21 night, see
+ * risenlab-flute-tple-investigation memory) fully diagnosed why the flute item does nothing when
+ * used (its `.tple` template's `PostInteractScript` is bound to a string that looks like a real
+ * script function but isn't one — a leftover bug in the original game, not something RisenLab
+ * broke) — the "script binding" panel below surfaces exactly that diagnosis for any item, read
+ * straight from `templates.pak`, no live game needed. Actually FIXING a binding in the real game
+ * turned out to be real reverse-engineering (a live patch attempt corrupted the game's load,
+ * safely rolled back) — not attempted again here without a lot more care. */
 export default function Inventory({ lang }: Props) {
   const [meshes, setMeshes] = useState<MeshEntry[]>([]);
   const [textures, setTextures] = useState<LibraryEntry[]>([]);
@@ -124,6 +130,38 @@ export default function Inventory({ lang }: Props) {
     removeManualScenario(selected.name, scenarioId);
     setManualIds((ids) => ids.filter((id) => id !== scenarioId));
   }
+
+  // Real script-hook bindings (CanInteractScript/PreInteractScript/InteractScript/
+  // PostInteractScript) read straight from this item's own `.tple` template — see the tple.rs
+  // doc comment for why `InteractScript`/`PostInteractScript` are the interesting ones and why a
+  // bound value that ISN'T a real compiled function (like the flute's own PostInteractScript)
+  // can't be verified from this alone, only flagged as worth checking.
+  const [scriptBindings, setScriptBindings] = useState<ScriptBinding[] | null>(null);
+  useEffect(() => {
+    if (!selected) {
+      setScriptBindings(null);
+      return;
+    }
+    let cancelled = false;
+    setScriptBindings(null);
+    findTemplateForMesh(selected.name)
+      .then((template) => {
+        if (cancelled) return;
+        if (!template) {
+          setScriptBindings([]);
+          return null;
+        }
+        return templateScriptBindings(template.archivePath, template.entryPath).then((bindings) => {
+          if (!cancelled) setScriptBindings(bindings);
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setScriptBindings([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selected]);
 
   const itemsByCategory = useMemo(() => {
     const out: Record<Category, MeshEntry[]> = { weapons: [], potions: [], food: [], valuables: [], tools: [] };
@@ -315,6 +353,48 @@ export default function Inventory({ lang }: Props) {
                     />
                   </div>
                 ) : null}
+              </div>
+            ) : null}
+            {selected ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+                <span
+                  style={{ font: "600 10px system-ui", letterSpacing: ".04em", textTransform: "uppercase", color: "var(--text-faint)" }}
+                  title={
+                    lang === "uk"
+                      ? "Прочитано напряму з .tple предмета в templates.pak. Значення тут — просто факт з файлу: чи це реальна функція гри, треба перевіряти окремо (див. пам'ять risenlab-flute-tple-investigation)."
+                      : "Read straight from the item's .tple in templates.pak. The value shown is just what the file says — whether it's a real compiled function needs checking separately (see risenlab-flute-tple-investigation memory)."
+                  }
+                >
+                  {lang === "uk" ? "Скрипт взаємодії:" : "Interaction script:"}
+                </span>
+                {scriptBindings === null ? (
+                  <span style={{ font: "500 11px system-ui", color: "var(--text-faint)" }}>
+                    {lang === "uk" ? "читання…" : "reading…"}
+                  </span>
+                ) : scriptBindings.length === 0 ? (
+                  <span style={{ font: "500 11px system-ui", color: "var(--text-faint)" }}>
+                    {lang === "uk" ? "шаблон не знайдено" : "no template found"}
+                  </span>
+                ) : (
+                  ["InteractScript", "PostInteractScript"].map((prop) => {
+                    const binding = scriptBindings.find((b) => b.property === prop);
+                    return (
+                      <span
+                        key={prop}
+                        style={{
+                          padding: "3px 9px",
+                          borderRadius: 10,
+                          background: "var(--bg2)",
+                          border: "1px solid var(--border)",
+                          font: "500 11px ui-monospace, Menlo, monospace",
+                          color: binding?.boundValue ? "var(--text)" : "var(--text-faint)",
+                        }}
+                      >
+                        {prop}: {binding?.boundValue ?? (lang === "uk" ? "не прив'язано" : "unbound")}
+                      </span>
+                    );
+                  })
+                )}
               </div>
             ) : null}
           </div>

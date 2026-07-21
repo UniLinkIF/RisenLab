@@ -328,13 +328,23 @@ export default function Animations({ lang }: Props) {
 
   // Selecting a scenario needs the Hero's own skeleton (every real clip a scenario plays is a
   // `Hero_*` clip) — auto-selects `Ani_Hero_Armor_Player` if some other character is currently
-  // selected, same convenience `guessMotionQuery` gives regular clip browsing.
+  // selected. Real bug found live (owner: "я вибираю 1 сценарій і всі інші зникають"): the
+  // actor-switch effect below always resets `motionQuery` via `guessMotionQuery` for the REGULAR
+  // clip-browsing convenience — but `guessMotionQuery("Ani_Hero_Armor_Player...")` returns
+  // "Hero", and since the Scenarios tab's list is ALSO filtered by that same shared query, every
+  // scenario whose label doesn't literally contain "Hero" (i.e. nearly all of them) vanished the
+  // moment a non-Hero actor auto-switched. `scenarioSwitchRef` tells that effect to skip the
+  // reset when the switch was caused by picking a scenario, not by browsing actors.
+  const scenarioSwitchRef = useRef(false);
   function handleSelectScenario(scenario: ScenarioDef) {
     setSelectedMotion(null);
     setSelectedScenario(scenario);
     if (selectedActor?.name !== "Ani_Hero_Armor_Player._xmac") {
       const hero = actors.find((a) => a.name === "Ani_Hero_Armor_Player._xmac");
-      if (hero) setSelectedActor(hero);
+      if (hero) {
+        scenarioSwitchRef.current = true;
+        setSelectedActor(hero);
+      }
     }
   }
   function handleSelectMotion(motion: MotionEntry) {
@@ -481,7 +491,11 @@ export default function Animations({ lang }: Props) {
     const orientation = getActorOrientation(selectedActor.archivePath, selectedActor.entryPath);
     setMirrorSkeleton(orientation.mirrorSkeleton);
     setMirrorMesh(orientation.mirrorMesh);
-    setMotionQuery(guessMotionQuery(selectedActor.name));
+    if (scenarioSwitchRef.current) {
+      scenarioSwitchRef.current = false;
+    } else {
+      setMotionQuery(guessMotionQuery(selectedActor.name));
+    }
     actorObjUrl(selectedActor.archivePath, selectedActor.entryPath)
       .then((url) => {
         if (!cancelled) setObjUrl(url);

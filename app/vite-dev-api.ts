@@ -370,6 +370,19 @@ export function risenlabDevApi(): Plugin {
             const { stdout } = await runCli(["list-motions", settings.gameExe]);
             return sendJson(res, 200, JSON.parse(stdout));
           }
+          if (url.pathname === "/api/list-templates" && req.method === "GET") {
+            const settings = await loadSettings();
+            if (!settings.gameExe) return sendJson(res, 400, { error: "No game path set" });
+            const { stdout } = await runCli(["list-templates", settings.gameExe]);
+            return sendJson(res, 200, JSON.parse(stdout));
+          }
+          if (url.pathname === "/api/find-template-for-mesh" && req.method === "GET") {
+            const settings = await loadSettings();
+            if (!settings.gameExe) return sendJson(res, 400, { error: "No game path set" });
+            const meshFileName = url.searchParams.get("meshFileName")!;
+            const { stdout } = await runCli(["find-template-for-mesh", settings.gameExe, meshFileName]);
+            return sendJson(res, 200, JSON.parse(stdout));
+          }
           if (url.pathname === "/api/mesh-texture-refs" && req.method === "GET") {
             const archivePath = url.searchParams.get("archivePath")!;
             const entryPath = url.searchParams.get("entryPath")!;
@@ -385,6 +398,12 @@ export function risenlabDevApi(): Plugin {
             const archivePath = url.searchParams.get("archivePath")!;
             const entryPath = url.searchParams.get("entryPath")!;
             const { stdout } = await runCli(["actor-skeleton", archivePath, entryPath]);
+            return sendJson(res, 200, JSON.parse(stdout));
+          }
+          if (url.pathname === "/api/template-script-bindings" && req.method === "GET") {
+            const archivePath = url.searchParams.get("archivePath")!;
+            const entryPath = url.searchParams.get("entryPath")!;
+            const { stdout } = await runCli(["template-script-bindings", archivePath, entryPath]);
             return sendJson(res, 200, JSON.parse(stdout));
           }
           if (url.pathname === "/api/motion-tracks" && req.method === "GET") {

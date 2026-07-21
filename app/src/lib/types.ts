@@ -28,6 +28,10 @@ export type ActorEntry = MeshEntry;
  * memory for the `.xmot` reverse-engineering status). */
 export type MotionEntry = MeshEntry;
 
+/** A real `.tple` item/object template (`templates.pak`), same shape as `MeshEntry` — see
+ * `findTemplateForMesh`/`templateScriptBindings`. */
+export type TemplateEntry = MeshEntry;
+
 /** One bone in a real `._xmac` actor's skeleton — name, parent link, and bind-pose local
  * transform, parsed directly from the file (see `xmac::parse_skeleton` on the Rust side). */
 export interface SkeletonNode {
@@ -37,6 +41,18 @@ export interface SkeletonNode {
   rotation: [number, number, number, number];
   /** [x, y, z] */
   position: [number, number, number];
+}
+
+/** One of an item/object template's four interaction script hooks (`CanInteractScript` /
+ * `PreInteractScript` / `InteractScript` / `PostInteractScript`), read straight from its real
+ * `._tple` bytes (`tple::scan_script_bindings` on the Rust side). `boundValue: null` means the
+ * hook is genuinely unbound; a non-null value that isn't a real compiled function (unverifiable
+ * from this alone) is exactly the kind of leftover bug that leaves an item doing nothing when
+ * used — e.g. the real flute's `PostInteractScript` is bound to `PreInventoryUse_Player`, which
+ * looks like a function name but isn't one. */
+export interface ScriptBinding {
+  property: string;
+  boundValue: string | null;
 }
 
 /** One bone's real keyframe tracks from a `._xmot` motion clip — empty arrays mean the clip

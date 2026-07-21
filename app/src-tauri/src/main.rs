@@ -256,6 +256,34 @@ fn list_motions(state: State<AppState>) -> Result<Vec<MeshEntryDto>, String> {
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+fn list_templates(state: State<AppState>) -> Result<Vec<MeshEntryDto>, String> {
+    let exe = state
+        .settings
+        .lock()
+        .unwrap()
+        .game_exe
+        .clone()
+        .ok_or_else(|| "Спершу вкажіть шлях до гри".to_string())?;
+    batch::list_templates(&PathBuf::from(exe))
+        .map(|v| v.into_iter().map(Into::into).collect())
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn find_template_for_mesh(state: State<AppState>, mesh_file_name: String) -> Result<Option<MeshEntryDto>, String> {
+    let exe = state
+        .settings
+        .lock()
+        .unwrap()
+        .game_exe
+        .clone()
+        .ok_or_else(|| "Спершу вкажіть шлях до гри".to_string())?;
+    batch::find_template_for_mesh(&PathBuf::from(exe), &mesh_file_name)
+        .map(|v| v.map(Into::into))
+        .map_err(|e| e.to_string())
+}
+
 #[tauri::command(rename_all = "camelCase")]
 fn mesh_texture_refs(
     state: State<AppState>,
@@ -278,6 +306,14 @@ fn mesh_texture_refs(
 #[tauri::command(rename_all = "camelCase")]
 fn actor_skeleton(archive_path: String, entry_path: String) -> Result<Vec<risenlab::xmac::SkeletonNode>, String> {
     batch::actor_skeleton(&PathBuf::from(archive_path), &entry_path).map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+fn template_script_bindings(
+    archive_path: String,
+    entry_path: String,
+) -> Result<Vec<risenlab::tple::ScriptBinding>, String> {
+    batch::template_script_bindings(&PathBuf::from(archive_path), &entry_path).map_err(|e| e.to_string())
 }
 
 #[tauri::command(rename_all = "camelCase")]
@@ -617,6 +653,9 @@ fn main() {
             list_motions,
             mesh_texture_refs,
             actor_skeleton,
+            template_script_bindings,
+            list_templates,
+            find_template_for_mesh,
             motion_tracks,
             actor_skinned_mesh,
             regenerate_texture,

@@ -420,6 +420,77 @@ pub fn list_motions(exe_or_shortcut: &Path) -> Result<Vec<ArchiveAssetEntry>> {
     list_by_extension(exe_or_shortcut, "._xmot")
 }
 
+/// Lists every real `.tple` item/object template (`templates.pak`) — the property files that
+/// decide what happens when something is interacted with (see `tple.rs`). Same lazy/no-decode
+/// listing as the others; reading any one entry's actual script bindings is a separate,
+/// on-demand call (`template_script_bindings`).
+pub fn list_templates(exe_or_shortcut: &Path) -> Result<Vec<ArchiveAssetEntry>> {
+    list_by_extension(exe_or_shortcut, ".tple")
+}
+
+/// Every real asset extension this project has seen (`._xmsh`, `._xmac`, `._xmot`, `._ximg`,
+/// ...) is written on disk/in archives with a leading underscore, but a `.tple` template's own
+/// `MeshFileName` property references the SAME file without one (confirmed on real data:
+/// `Item_Flute._xmsh` the mesh vs. `Item_Flute.xmsh` stored inside `It_Flute.tple`) — so an exact
+/// string match between the two never succeeds. Case-insensitive on top, since real data has
+/// mixed-case mesh names too (`ani_hero_armor_don_hunter_body_cloth_diffuse` vs. the rest).
+fn normalize_mesh_name(name: &str) -> String {
+    let lower = name.to_ascii_lowercase();
+    match lower.rsplit_once('.') {
+        Some((stem, ext)) => format!("{stem}.{}", ext.trim_start_matches('_')),
+        None => lower,
+    }
+}
+
+/// Finds the `.tple` template whose own `MeshFileName` property matches `mesh_file_name` (e.g.
+/// `Item_Flute._xmsh`) — the real, only reliable way to go from a browsable mesh (Inventory's own
+/// unit of "one item") back to the template that actually governs how it's used, since template
+/// names (`It_Flute`) and mesh names (`Item_Flute`) don't follow one consistent naming rule
+/// (confirmed on real data: not simply a prefix swap in every case). Opens each distinct archive
+/// at most once, not once per entry — `templates.pak` alone has ~2700 entries.
+pub fn find_template_for_mesh(exe_or_shortcut: &Path, mesh_file_name: &str) -> Result<Option<ArchiveAssetEntry>> {
+    let wanted = normalize_mesh_name(mesh_file_name);
+    let templates = list_templates(exe_or_shortcut)?;
+    let mut open_archives: HashMap<String, pak::PakArchive> = HashMap::new();
+    for entry in &templates {
+        let archive = match open_archives.entry(entry.archive_path.clone()) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                v.insert(pak::PakArchive::open(&entry.archive_path)?)
+            }
+        };
+        let Some(file_entry) = archive.files().into_iter().find(|f| f.path == entry.entry_path) else {
+            continue;
+        };
+        let Ok(data) = archive.read_file(&file_entry) else { continue };
+        let Some(found) = tple::find_string_property(&data, "MeshFileName") else { continue };
+        if normalize_mesh_name(&found) == wanted {
+            return Ok(Some(entry.clone()));
+        }
+    }
+    Ok(None)
+}
+
+#[cfg(test)]
+mod mesh_name_tests {
+    use super::normalize_mesh_name;
+
+    #[test]
+    fn strips_the_underscore_risen_puts_before_real_asset_extensions() {
+        assert_eq!(normalize_mesh_name("Item_Flute._xmsh"), normalize_mesh_name("Item_Flute.xmsh"));
+    }
+
+    #[test]
+    fn is_case_insensitive() {
+        assert_eq!(normalize_mesh_name("Item_Flute.xmsh"), normalize_mesh_name("ITEM_FLUTE.XMSH"));
+    }
+
+    #[test]
+    fn different_stems_do_not_match() {
+        assert_ne!(normalize_mesh_name("Item_Flute._xmsh"), normalize_mesh_name("Item_Bread._xmsh"));
+    }
+}
+
 /// Pulls one entry's raw bytes straight out of an archive and stages them to a temp file under
 /// `out_dir` (mimicry-helper needs a real file path, not bytes) — shared by
 /// `mesh_to_obj_from_archive`/`actor_to_obj_from_archive`.

@@ -10,7 +10,7 @@
 //    `window.__TAURI_INTERNALS__` there either), hitting the SAME `/api/*` shape served by the
 //    packaged app's own embedded HTTP server instead of the dev CLI bridge — the only
 //    difference is every request needs the remote token attached (see `remoteToken.ts`).
-import type { ActorEntry, AppSettings, AppStats, BoneMotion, GameCheckResult, LibraryEntry, MaterialTextureRefs, MeshEntry, MotionEntry, RemoteStatus, ReviewItem, ReviewStatus, SkeletonNode, SkinnedMeshData, TextureMeta } from "./types";
+import type { ActorEntry, AppSettings, AppStats, BoneMotion, GameCheckResult, LibraryEntry, MaterialTextureRefs, MeshEntry, MotionEntry, RemoteStatus, ReviewItem, ReviewStatus, ScriptBinding, SkeletonNode, SkinnedMeshData, TemplateEntry, TextureMeta } from "./types";
 import { memoizeAsync } from "./cache";
 import { getRemoteToken } from "./remoteToken";
 
@@ -143,6 +143,22 @@ export async function listMotions(): Promise<MotionEntry[]> {
   return api<MotionEntry[]>("list-motions");
 }
 
+export async function listTemplates(): Promise<TemplateEntry[]> {
+  if (isTauri()) return invoke<TemplateEntry[]>("list_templates");
+  return api<TemplateEntry[]>("list-templates");
+}
+
+// Cheap given `find_template_for_mesh` opens each archive at most once, but there's no reason
+// to redo it for the same mesh name twice in one session.
+const templateForMeshCache = new Map<string, Promise<TemplateEntry | null>>();
+
+export async function findTemplateForMesh(meshFileName: string): Promise<TemplateEntry | null> {
+  return memoizeAsync(templateForMeshCache, meshFileName, async () => {
+    if (isTauri()) return invoke<TemplateEntry | null>("find_template_for_mesh", { meshFileName });
+    return api<TemplateEntry | null>(`find-template-for-mesh?meshFileName=${encodeURIComponent(meshFileName)}`);
+  });
+}
+
 // Real diffuse/normal texture file names a mesh/actor's own material references — see
 // `MaterialTextureRefs`. Cached like the .obj URLs above (same conversion cost to get there).
 const textureRefsCache = new Map<string, Promise<MaterialTextureRefs>>();
@@ -170,6 +186,20 @@ export async function actorSkeleton(archivePath: string, entryPath: string): Pro
     if (isTauri()) return invoke<SkeletonNode[]>("actor_skeleton", { archivePath, entryPath });
     return api<SkeletonNode[]>(
       `actor-skeleton?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}`,
+    );
+  });
+}
+
+// Cheap (single small file read + a linear string scan, no mimicry-helper) but still worth
+// caching — an Inventory item re-render shouldn't re-shell-out to the CLI every time.
+const scriptBindingsCache = new Map<string, Promise<ScriptBinding[]>>();
+
+export async function templateScriptBindings(archivePath: string, entryPath: string): Promise<ScriptBinding[]> {
+  const key = `${archivePath}::${entryPath}`;
+  return memoizeAsync(scriptBindingsCache, key, async () => {
+    if (isTauri()) return invoke<ScriptBinding[]>("template_script_bindings", { archivePath, entryPath });
+    return api<ScriptBinding[]>(
+      `template-script-bindings?archivePath=${encodeURIComponent(archivePath)}&entryPath=${encodeURIComponent(entryPath)}`,
     );
   });
 }
