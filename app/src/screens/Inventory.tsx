@@ -5,7 +5,8 @@ import { listLibrary, listMeshes, listMotions, meshObjUrl, readTextureDataUrl } 
 import { filterEntries } from "../lib/library";
 import { findTextureEntryForBaseName } from "../lib/materials";
 import { categorizeMesh, type ItemZoneId } from "../lib/showroomCategorize";
-import { deriveScenarios, matchScenariosForItemName } from "../lib/scenarios";
+import { deriveScenarios, matchScenariosForItemName, type ScenarioDef } from "../lib/scenarios";
+import { addManualScenario, getManualScenarioIds, removeManualScenario } from "../lib/itemScenarios";
 import Model3DViewer, { type ViewMode } from "../components/Model3DViewer";
 import SearchableList from "../components/SearchableList";
 
@@ -83,6 +84,46 @@ export default function Inventory({ lang }: Props) {
   // encodes. Most items (weapons, tools) have none — a real, informative answer, not a bug.
   const scenarios = useMemo(() => deriveScenarios(motions), [motions]);
   const matchedScenarios = useMemo(() => (selected ? matchScenariosForItemName(scenarios, selected.name) : []), [scenarios, selected]);
+
+  // Manual item -> scenario associations (owner request, same day: "зроби можливість додавати
+  // сценарій до ітемів" — the automatic name-match above only catches a pairing that shares a
+  // real word; plenty of real items don't (a lute-like item whose scenario is literally named
+  // "PlayGuitar"), so this lets the owner confirm one by hand instead — see lib/itemScenarios.ts).
+  const [manualIds, setManualIds] = useState<string[]>([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+
+  useEffect(() => {
+    setManualIds(selected ? getManualScenarioIds(selected.name) : []);
+    setPickerOpen(false);
+    setPickerQuery("");
+  }, [selected]);
+
+  const manualScenarios = useMemo(() => {
+    const matchedIds = new Set(matchedScenarios.map((s) => s.id));
+    return manualIds.map((id) => scenarios.find((s) => s.id === id)).filter((s): s is ScenarioDef => !!s && !matchedIds.has(s.id));
+  }, [manualIds, scenarios, matchedScenarios]);
+
+  const pickerCandidates = useMemo(() => {
+    const takenIds = new Set([...matchedScenarios, ...manualScenarios].map((s) => s.id));
+    const q = pickerQuery.trim().toLowerCase();
+    return scenarios
+      .filter((s) => !takenIds.has(s.id) && (!q || s.label.toLowerCase().includes(q)))
+      .map((s) => ({ name: s.label, scenario: s }));
+  }, [scenarios, matchedScenarios, manualScenarios, pickerQuery]);
+
+  function handleAddManualScenario(scenario: ScenarioDef) {
+    if (!selected) return;
+    addManualScenario(selected.name, scenario.id);
+    setManualIds((ids) => [...ids, scenario.id]);
+    setPickerOpen(false);
+    setPickerQuery("");
+  }
+  function handleRemoveManualScenario(scenarioId: string) {
+    if (!selected) return;
+    removeManualScenario(selected.name, scenarioId);
+    setManualIds((ids) => ids.filter((id) => id !== scenarioId));
+  }
 
   const itemsByCategory = useMemo(() => {
     const out: Record<Category, MeshEntry[]> = { weapons: [], potions: [], food: [], valuables: [], tools: [] };
@@ -195,25 +236,85 @@ export default function Inventory({ lang }: Props) {
                 : "Real in-game inventory items, grouped by slot — browsing only for now."}
             </div>
             {selected ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, flexWrap: "wrap", position: "relative" }}>
                 <span style={{ font: "600 10px system-ui", letterSpacing: ".04em", textTransform: "uppercase", color: "var(--text-faint)" }}>
                   {lang === "uk" ? "Закодовані сценарії:" : "Encoded scenarios:"}
                 </span>
-                {matchedScenarios.length > 0 ? (
-                  matchedScenarios.map((s) => (
-                    <span
-                      key={s.id}
-                      title={lang === "uk" ? "Переглянути живо: вкладка «Анімації» → цей же напис у списку" : "Watch it live: Animations tab → this same label in the list"}
-                      style={{ padding: "3px 9px", borderRadius: 10, background: "var(--accent-tint)", font: "600 11px system-ui", color: "var(--text)" }}
-                    >
-                      {s.label}
-                    </span>
-                  ))
-                ) : (
-                  <span style={{ font: "500 11px system-ui", color: "var(--text-faint)" }}>
-                    {lang === "uk" ? "немає (цей предмет не бере участі в жодному відомому сценарії)" : "none (this item isn't part of any known scenario)"}
+                {matchedScenarios.map((s) => (
+                  <span
+                    key={s.id}
+                    title={lang === "uk" ? "Переглянути живо: вкладка «Анімації» → цей же напис у списку" : "Watch it live: Animations tab → this same label in the list"}
+                    style={{ padding: "3px 9px", borderRadius: 10, background: "var(--accent-tint)", font: "600 11px system-ui", color: "var(--text)" }}
+                  >
+                    {s.label}
                   </span>
-                )}
+                ))}
+                {manualScenarios.map((s) => (
+                  <span
+                    key={s.id}
+                    title={lang === "uk" ? "Додано вручну" : "Added manually"}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 6,
+                      padding: "3px 6px 3px 9px",
+                      borderRadius: 10,
+                      background: "var(--bg2)",
+                      border: "1px dashed var(--accent)",
+                      font: "600 11px system-ui",
+                      color: "var(--text)",
+                    }}
+                  >
+                    {s.label}
+                    <button
+                      onClick={() => handleRemoveManualScenario(s.id)}
+                      title={lang === "uk" ? "Прибрати" : "Remove"}
+                      style={{ padding: 0, width: 14, height: 14, borderRadius: 7, background: "var(--bg1)", border: "none", font: "700 9px system-ui", color: "var(--text-faint)", cursor: "pointer", lineHeight: 1 }}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ))}
+                {matchedScenarios.length === 0 && manualScenarios.length === 0 ? (
+                  <span style={{ font: "500 11px system-ui", color: "var(--text-faint)" }}>
+                    {lang === "uk" ? "немає" : "none"}
+                  </span>
+                ) : null}
+                <button
+                  onClick={() => setPickerOpen((v) => !v)}
+                  style={{ padding: "3px 9px", borderRadius: 10, background: "transparent", border: "1px dashed var(--border)", font: "600 11px system-ui", color: "var(--text-faint)", cursor: "pointer" }}
+                >
+                  {lang === "uk" ? "+ Додати сценарій" : "+ Add scenario"}
+                </button>
+                {pickerOpen ? (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "100%",
+                      left: 0,
+                      marginTop: 6,
+                      width: 320,
+                      height: 260,
+                      zIndex: 20,
+                      background: "var(--bg1)",
+                      border: "1px solid var(--border-strong)",
+                      borderRadius: 10,
+                      boxShadow: "0 8px 24px rgba(0,0,0,.5)",
+                      padding: 10,
+                      display: "flex",
+                    }}
+                  >
+                    <SearchableList
+                      items={pickerCandidates}
+                      selectedName={null}
+                      onSelect={(item) => handleAddManualScenario(item.scenario)}
+                      query={pickerQuery}
+                      onQueryChange={setPickerQuery}
+                      placeholder={lang === "uk" ? "Пошук сценарію…" : "Search scenarios…"}
+                      limit={200}
+                    />
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
