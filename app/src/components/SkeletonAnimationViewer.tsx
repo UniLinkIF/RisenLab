@@ -81,14 +81,21 @@ interface Props {
    * mirrors onto the other panel and vice versa — see lib/cameraSync.ts. Absent/null = normal
    * independent orbit. */
   cameraSync?: CameraSyncRef | null;
-  /** Default `true` (existing behavior, every current caller): loop this clip forever at
-   * `elapsed % duration`. `false` plays it exactly once and holds the final pose — added for
-   * `ScenarioPlayer` (2026-07-21), which chains several real clips end to end (e.g. sit down →
-   * play flute → stand up) and needs to know when one clip is done before starting the next. */
-  loop?: boolean;
-  /** Fires once, the first time playback reaches the end of a `loop={false}` clip. Not called
-   * at all when `loop` is true (or omitted). */
-  onComplete?: () => void;
+  /** Lets a caller (`ScenarioPlayer`) swap which real clip is actually playing WITHOUT
+   * remounting this component — i.e. without tearing down and recreating the WebGL scene/
+   * camera. Real bug (owner report, 2026-07-21): the first version of `ScenarioPlayer` remounted
+   * a fresh `SkeletonAnimationViewer` per step (`key={stepIndex}`), which re-ran the camera-
+   * framing logic against THAT step's pose — sitting vs. standing have very different bounding
+   * boxes, so the camera visibly jumped/reset on every transition ("перериває, змінює
+   * положення"). Passing `activeClip` here instead updates the SAME long-lived scene's active
+   * track data in place; the camera is framed once, at mount, and never touched again.
+   * `tracks` (the required prop above) still seeds the very first frame before this can run —
+   * every OTHER caller in this app ignores `activeClip` entirely and keeps working exactly as
+   * before (remounting via `tracks`/`nodes` changing is still how a brand new clip/actor
+   * selection works). `sustain: true` loops forever with no auto-advance; otherwise it plays
+   * once and calls `onActiveClipComplete`. */
+  activeClip?: { tracks: BoneMotion[]; sustain?: boolean } | null;
+  onActiveClipComplete?: () => void;
 }
 
 /** Brute-forced all 24 proper signed-axis-permutation candidates for position+rotation against
@@ -166,7 +173,7 @@ export function motionDuration(tracks: BoneMotion[]): number {
   return d;
 }
 
-export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, resolveTexture, showSkeleton, mirrorSkeleton, mirrorMesh, cameraSync, loop = true, onComplete }: Props) {
+export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, resolveTexture, showSkeleton, mirrorSkeleton, mirrorMesh, cameraSync, activeClip, onActiveClipComplete }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -465,11 +472,19 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     let disposed = false;
     let clockStart = performance.now();
     let isPlaying = playing;
-    const duration = motionDuration(tracks) || 1;
+    // Mutable "which clip is actually playing right now" — seeded from `tracks`/props, but
+    // changeable in place via `setActiveClip` below (see the `activeClip` prop doc comment for
+    // why: swapping these WITHOUT remounting is what keeps the camera/WebGL context stable
+    // across a scenario's steps).
+    let currentTracks = tracks;
+    let duration = motionDuration(tracks) || 1;
+    let currentLoop = true;
+    let currentOnComplete: (() => void) | undefined;
+    let stepCompleted = false;
 
     function applyPoseAt(t: number) {
       nodes.forEach((_n, i) => {
-        const track = tracks[i];
+        const track = currentTracks[i];
         if (!track) return;
         const pos = lerpVec3Track(track.positionKeys, t, mirrorSkeleton);
         if (pos) bones[i].position.copy(pos);
@@ -535,18 +550,17 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     updateSkinning();
 
     let frame = 0;
-    let completed = false;
     function animate() {
       frame = requestAnimationFrame(animate);
       if (isPlaying) {
         const rawElapsed = (performance.now() - clockStart) / 1000;
-        const elapsed = loop ? rawElapsed % duration : Math.min(rawElapsed, duration);
+        const elapsed = currentLoop ? rawElapsed % duration : Math.min(rawElapsed, duration);
         applyPoseAt(elapsed);
         root.updateMatrixWorld(true);
         updateSkinning();
-        if (!loop && !completed && rawElapsed >= duration) {
-          completed = true;
-          onComplete?.();
+        if (!currentLoop && !stepCompleted && rawElapsed >= duration) {
+          stepCompleted = true;
+          currentOnComplete?.();
         }
       }
       const syncing = !!(cameraSync?.current && cameraSync.current.rev > lastAppliedSyncRev);
@@ -586,12 +600,28 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     const setShowSkeleton = (v: boolean) => {
       helper.visible = v;
     };
-    // Re-read `playing`/`showSkeleton` on every prop change without tearing the whole scene
-    // down (a fresh WebGL context per click would be wasteful and would fight the same
-    // context-exhaustion issue documented in Model3DViewer.tsx).
-    const el = container as HTMLDivElement & { __setPlaying?: (p: boolean) => void; __setShowSkeleton?: (v: boolean) => void };
+    // The `activeClip` mechanism itself — see the `Props` doc comment. Swaps which clip is
+    // playing WITHOUT touching the camera/scene/renderer at all.
+    const setActiveClip = (newTracks: BoneMotion[], sustain: boolean, onComplete: (() => void) | undefined) => {
+      currentTracks = newTracks;
+      duration = motionDuration(newTracks) || 1;
+      currentLoop = sustain;
+      currentOnComplete = onComplete;
+      clockStart = performance.now();
+      stepCompleted = false;
+    };
+    if (activeClip) setActiveClip(activeClip.tracks, !!activeClip.sustain, onActiveClipComplete);
+    // Re-read `playing`/`showSkeleton`/`activeClip` on every prop change without tearing the
+    // whole scene down (a fresh WebGL context per click would be wasteful and would fight the
+    // same context-exhaustion issue documented in Model3DViewer.tsx).
+    const el = container as HTMLDivElement & {
+      __setPlaying?: (p: boolean) => void;
+      __setShowSkeleton?: (v: boolean) => void;
+      __setActiveClip?: (t: BoneMotion[], sustain: boolean, onComplete: (() => void) | undefined) => void;
+    };
     el.__setPlaying = setPlaying;
     el.__setShowSkeleton = setShowSkeleton;
+    el.__setActiveClip = setActiveClip;
 
     return () => {
       disposed = true;
@@ -621,6 +651,17 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     const container = containerRef.current as (HTMLDivElement & { __setShowSkeleton?: (v: boolean) => void }) | null;
     container?.__setShowSkeleton?.(showSkeleton);
   }, [showSkeleton]);
+
+  useEffect(() => {
+    if (!activeClip) return;
+    const container = containerRef.current as
+      | (HTMLDivElement & { __setActiveClip?: (t: BoneMotion[], sustain: boolean, onComplete: (() => void) | undefined) => void })
+      | null;
+    container?.__setActiveClip?.(activeClip.tracks, !!activeClip.sustain, onActiveClipComplete);
+    // `activeClip` is expected to be a fresh object each step (ScenarioPlayer builds it from
+    // `steps[stepIndex]`), so identity-based re-triggering here is exactly right — no separate
+    // "step index" prop needed.
+  }, [activeClip, onActiveClipComplete]);
 
   return <div ref={containerRef} style={{ width: "100%", height: "100%" }} />;
 }

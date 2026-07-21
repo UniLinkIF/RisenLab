@@ -12,6 +12,7 @@ import Model3DViewer, { type ViewMode } from "../components/Model3DViewer";
 import SkeletonAnimationViewer, { motionDuration } from "../components/SkeletonAnimationViewer";
 import ScenarioPlayer, { type ScenarioStepTracks } from "../components/ScenarioPlayer";
 import SearchableList from "../components/SearchableList";
+import { deriveScenarios, type ScenarioDef } from "../lib/scenarios";
 
 interface Props {
   lang: Lang;
@@ -101,54 +102,6 @@ function guessMotionQuery(actorName: string): string {
   if (actorName.startsWith("Object_")) return tokens[tokens.length - 1] ?? "";
   return "";
 }
-
-/** One step of a curated real animation-clip chain — see risenlab-inventory-scenario-idea
- * memory (2026-07-21) for the discovery this is built on: the Hero already has fully-authored
- * `Hero_<FromState>_..._<Action>_<Phase>` clip families for exactly this kind of "use an
- * inventory item" routine (sit → play/consume/etc → stop), the owner's own hypothesis
- * confirmed directly in the real game files — no new format work, just real `.xmot` clip names
- * looked up by exact string match against the already-loaded `motions` list. */
-interface ScenarioClipRef {
-  label: string;
-  name: string;
-  sustain?: boolean;
-  advanceLabel?: string;
-}
-interface ScenarioDef {
-  id: string;
-  label: { uk: string; en: string };
-  clips: ScenarioClipRef[];
-}
-
-/** Only one scenario so far — the owner's own flute example, end to end with real clip names
- * confirmed against the connected game (`list-motions`, archiveStem "animations"). More can be
- * added the same way once a clip family is confirmed real; this is deliberately NOT a generic
- * item→animation lookup system (that would need the still-unresolved in-game trigger question
- * this whole feature intentionally sidesteps — see the memory file). */
-const SCENARIOS: ScenarioDef[] = [
-  {
-    id: "flute",
-    label: { uk: "🎭 Сценарій: Флейта", en: "🎭 Scenario: Flute" },
-    clips: [
-      { label: "Сідає на землю", name: "Hero_Stand_None_None_P0_SitGround_Begin_N_Fwd_00_%_00_P0_0._xmot" },
-      { label: "Починає грати на флейті", name: "Hero_SitGround_None_None_P0_PlayFlute_Begin_N_Fwd_00_%_00_P0_0._xmot" },
-      {
-        label: "Грає на флейті",
-        name: "Hero_SitGround_None_None_P0_PlayFlute_Loop_N_Fwd_00_%_00_P0_0._xmot",
-        sustain: true,
-        advanceLabel: "⏹ Закінчити гру",
-      },
-      { label: "Закінчує грати", name: "Hero_SitGround_None_None_P0_PlayFlute_End_N_Fwd_00_%_00_P0_0._xmot" },
-      {
-        label: "Сидить",
-        name: "Hero_SitGround_None_None_P0_Ambient_Loop_N_Fwd_00_%_00_P0_0._xmot",
-        sustain: true,
-        advanceLabel: "🧍 Встати",
-      },
-      { label: "Встає", name: "Hero_SitGround_None_None_P0_Stand_Begin_N_Fwd_00_%_00_P0_0._xmot" },
-    ],
-  },
-];
 
 export default function Animations({ lang }: Props) {
   const [actors, setActors] = useState<ActorEntry[]>([]);
@@ -368,7 +321,12 @@ export default function Animations({ lang }: Props) {
     return motionCategoryFilter === "all" ? byQuery : byQuery.filter((m) => motionCategory(m.name) === motionCategoryFilter);
   }, [motions, motionQuery, motionCategoryFilter]);
 
-  // Selecting a scenario needs the Hero's own skeleton (every real clip in SCENARIOS is a
+  // Every real "sit/stand + do something" scenario, derived mechanically from the Hero's own
+  // real Interacts clip names (owner, 2026-07-21: "виведи всі сценарії в те меню" — all of them,
+  // not just the flute example this started from) — see lib/scenarios.ts.
+  const scenarios = useMemo(() => deriveScenarios(motions), [motions]);
+
+  // Selecting a scenario needs the Hero's own skeleton (every real clip a scenario plays is a
   // `Hero_*` clip) — auto-selects `Ani_Hero_Armor_Player` if some other character is currently
   // selected, same convenience `guessMotionQuery` gives regular clip browsing.
   function handleSelectScenario(scenario: ScenarioDef) {
@@ -421,17 +379,17 @@ export default function Animations({ lang }: Props) {
   }, [selectedScenario, skeletonNodes, motions]);
 
   // Scenarios are picked from the SAME list as regular clips (owner request: switch between
-  // them like before) — a few curated pseudo-entries prepended, distinguished from a real
-  // `MotionEntry` by carrying a `scenario` field no real entry has.
+  // them like before) — pseudo-entries prepended, distinguished from a real `MotionEntry` by
+  // carrying a `scenario` field no real entry has.
   const motionListItems = useMemo(
-    () => [...SCENARIOS.map((s) => ({ name: lang === "uk" ? s.label.uk : s.label.en, scenario: s })), ...visibleMotions],
-    [visibleMotions, lang],
+    () => [...scenarios.map((s) => ({ name: s.label, scenario: s })), ...visibleMotions],
+    [visibleMotions, scenarios],
   );
   function handleSelectListItem(item: (typeof motionListItems)[number]) {
     if ("scenario" in item) handleSelectScenario(item.scenario);
     else handleSelectMotion(item);
   }
-  const selectedListName = selectedScenario ? (lang === "uk" ? selectedScenario.label.uk : selectedScenario.label.en) : (selectedMotion?.name ?? null);
+  const selectedListName = selectedScenario ? selectedScenario.label : (selectedMotion?.name ?? null);
 
   // Per-material texture resolution for multi-material actors (see the matching prop doc in
   // SkeletonAnimationViewer) — same library lookup the auto-match above uses. When the user
