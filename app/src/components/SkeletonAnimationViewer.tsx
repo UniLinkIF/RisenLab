@@ -81,6 +81,14 @@ interface Props {
    * mirrors onto the other panel and vice versa — see lib/cameraSync.ts. Absent/null = normal
    * independent orbit. */
   cameraSync?: CameraSyncRef | null;
+  /** Default `true` (existing behavior, every current caller): loop this clip forever at
+   * `elapsed % duration`. `false` plays it exactly once and holds the final pose — added for
+   * `ScenarioPlayer` (2026-07-21), which chains several real clips end to end (e.g. sit down →
+   * play flute → stand up) and needs to know when one clip is done before starting the next. */
+  loop?: boolean;
+  /** Fires once, the first time playback reaches the end of a `loop={false}` clip. Not called
+   * at all when `loop` is true (or omitted). */
+  onComplete?: () => void;
 }
 
 /** Brute-forced all 24 proper signed-axis-permutation candidates for position+rotation against
@@ -158,7 +166,7 @@ export function motionDuration(tracks: BoneMotion[]): number {
   return d;
 }
 
-export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, resolveTexture, showSkeleton, mirrorSkeleton, mirrorMesh, cameraSync }: Props) {
+export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinnedMesh, objUrl, diffuseUrl, normalUrl, resolveTexture, showSkeleton, mirrorSkeleton, mirrorMesh, cameraSync, loop = true, onComplete }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -527,13 +535,19 @@ export default function SkeletonAnimationViewer({ nodes, tracks, playing, skinne
     updateSkinning();
 
     let frame = 0;
+    let completed = false;
     function animate() {
       frame = requestAnimationFrame(animate);
       if (isPlaying) {
-        const elapsed = ((performance.now() - clockStart) / 1000) % duration;
+        const rawElapsed = (performance.now() - clockStart) / 1000;
+        const elapsed = loop ? rawElapsed % duration : Math.min(rawElapsed, duration);
         applyPoseAt(elapsed);
         root.updateMatrixWorld(true);
         updateSkinning();
+        if (!loop && !completed && rawElapsed >= duration) {
+          completed = true;
+          onComplete?.();
+        }
       }
       const syncing = !!(cameraSync?.current && cameraSync.current.rev > lastAppliedSyncRev);
       if (syncing && cameraSync?.current) {

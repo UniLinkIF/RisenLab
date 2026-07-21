@@ -10,6 +10,7 @@ import { MOTION_CATEGORIES, motionCategory, type MotionCategory } from "../lib/m
 import FolderTree from "../components/FolderTree";
 import Model3DViewer, { type ViewMode } from "../components/Model3DViewer";
 import SkeletonAnimationViewer, { motionDuration } from "../components/SkeletonAnimationViewer";
+import ScenarioPlayer, { type ScenarioStepTracks } from "../components/ScenarioPlayer";
 import SearchableList from "../components/SearchableList";
 
 interface Props {
@@ -101,6 +102,54 @@ function guessMotionQuery(actorName: string): string {
   return "";
 }
 
+/** One step of a curated real animation-clip chain — see risenlab-inventory-scenario-idea
+ * memory (2026-07-21) for the discovery this is built on: the Hero already has fully-authored
+ * `Hero_<FromState>_..._<Action>_<Phase>` clip families for exactly this kind of "use an
+ * inventory item" routine (sit → play/consume/etc → stop), the owner's own hypothesis
+ * confirmed directly in the real game files — no new format work, just real `.xmot` clip names
+ * looked up by exact string match against the already-loaded `motions` list. */
+interface ScenarioClipRef {
+  label: string;
+  name: string;
+  sustain?: boolean;
+  advanceLabel?: string;
+}
+interface ScenarioDef {
+  id: string;
+  label: { uk: string; en: string };
+  clips: ScenarioClipRef[];
+}
+
+/** Only one scenario so far — the owner's own flute example, end to end with real clip names
+ * confirmed against the connected game (`list-motions`, archiveStem "animations"). More can be
+ * added the same way once a clip family is confirmed real; this is deliberately NOT a generic
+ * item→animation lookup system (that would need the still-unresolved in-game trigger question
+ * this whole feature intentionally sidesteps — see the memory file). */
+const SCENARIOS: ScenarioDef[] = [
+  {
+    id: "flute",
+    label: { uk: "🎭 Сценарій: Флейта", en: "🎭 Scenario: Flute" },
+    clips: [
+      { label: "Сідає на землю", name: "Hero_Stand_None_None_P0_SitGround_Begin_N_Fwd_00_%_00_P0_0._xmot" },
+      { label: "Починає грати на флейті", name: "Hero_SitGround_None_None_P0_PlayFlute_Begin_N_Fwd_00_%_00_P0_0._xmot" },
+      {
+        label: "Грає на флейті",
+        name: "Hero_SitGround_None_None_P0_PlayFlute_Loop_N_Fwd_00_%_00_P0_0._xmot",
+        sustain: true,
+        advanceLabel: "⏹ Закінчити гру",
+      },
+      { label: "Закінчує грати", name: "Hero_SitGround_None_None_P0_PlayFlute_End_N_Fwd_00_%_00_P0_0._xmot" },
+      {
+        label: "Сидить",
+        name: "Hero_SitGround_None_None_P0_Ambient_Loop_N_Fwd_00_%_00_P0_0._xmot",
+        sustain: true,
+        advanceLabel: "🧍 Встати",
+      },
+      { label: "Встає", name: "Hero_SitGround_None_None_P0_Stand_Begin_N_Fwd_00_%_00_P0_0._xmot" },
+    ],
+  },
+];
+
 export default function Animations({ lang }: Props) {
   const [actors, setActors] = useState<ActorEntry[]>([]);
   const [motions, setMotions] = useState<MotionEntry[]>([]);
@@ -119,6 +168,9 @@ export default function Animations({ lang }: Props) {
   const [motionQuery, setMotionQuery] = useState("");
   const [motionCategoryFilter, setMotionCategoryFilter] = useState<MotionCategory>("all");
   const [selectedMotion, setSelectedMotion] = useState<MotionEntry | null>(null);
+  const [selectedScenario, setSelectedScenario] = useState<ScenarioDef | null>(null);
+  const [scenarioSteps, setScenarioSteps] = useState<ScenarioStepTracks[] | null>(null);
+  const [scenarioError, setScenarioError] = useState<string | null>(null);
 
   const [mode, setMode] = useState<ViewMode>("textured");
 
@@ -315,6 +367,71 @@ export default function Animations({ lang }: Props) {
     const byQuery = filterEntries(motions, motionQuery);
     return motionCategoryFilter === "all" ? byQuery : byQuery.filter((m) => motionCategory(m.name) === motionCategoryFilter);
   }, [motions, motionQuery, motionCategoryFilter]);
+
+  // Selecting a scenario needs the Hero's own skeleton (every real clip in SCENARIOS is a
+  // `Hero_*` clip) — auto-selects `Ani_Hero_Armor_Player` if some other character is currently
+  // selected, same convenience `guessMotionQuery` gives regular clip browsing.
+  function handleSelectScenario(scenario: ScenarioDef) {
+    setSelectedMotion(null);
+    setSelectedScenario(scenario);
+    if (selectedActor?.name !== "Ani_Hero_Armor_Player._xmac") {
+      const hero = actors.find((a) => a.name === "Ani_Hero_Armor_Player._xmac");
+      if (hero) setSelectedActor(hero);
+    }
+  }
+  function handleSelectMotion(motion: MotionEntry) {
+    setSelectedScenario(null);
+    setSelectedMotion(motion);
+  }
+
+  // Fetches real bone tracks for every clip in the selected scenario, in order — the SAME
+  // `motionTracks` call regular single-clip playback already uses, just once per real clip name
+  // instead of once for whichever clip the user clicked. Clip names are looked up in the
+  // already-loaded `motions` list (a plain exact-name match, not a new API) so this never
+  // depends on knowing an archive path up front.
+  useEffect(() => {
+    if (!selectedScenario || skeletonNodes.length === 0) {
+      setScenarioSteps(null);
+      setScenarioError(null);
+      return;
+    }
+    let cancelled = false;
+    setScenarioSteps(null);
+    setScenarioError(null);
+    const boneNames = skeletonNodes.map((n) => n.name);
+    (async () => {
+      const steps: ScenarioStepTracks[] = [];
+      for (const clip of selectedScenario.clips) {
+        const entry = motions.find((m) => m.name === clip.name);
+        if (!entry) {
+          if (!cancelled) setScenarioError(`Кліп не знайдено серед реальних анімацій: ${clip.name}`);
+          return;
+        }
+        const tracks = await motionTracks(entry.archivePath, entry.entryPath, boneNames);
+        if (cancelled) return;
+        steps.push({ label: clip.label, tracks, sustain: clip.sustain, advanceLabel: clip.advanceLabel });
+      }
+      if (!cancelled) setScenarioSteps(steps);
+    })().catch((e) => {
+      if (!cancelled) setScenarioError(String(e));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedScenario, skeletonNodes, motions]);
+
+  // Scenarios are picked from the SAME list as regular clips (owner request: switch between
+  // them like before) — a few curated pseudo-entries prepended, distinguished from a real
+  // `MotionEntry` by carrying a `scenario` field no real entry has.
+  const motionListItems = useMemo(
+    () => [...SCENARIOS.map((s) => ({ name: lang === "uk" ? s.label.uk : s.label.en, scenario: s })), ...visibleMotions],
+    [visibleMotions, lang],
+  );
+  function handleSelectListItem(item: (typeof motionListItems)[number]) {
+    if ("scenario" in item) handleSelectScenario(item.scenario);
+    else handleSelectMotion(item);
+  }
+  const selectedListName = selectedScenario ? (lang === "uk" ? selectedScenario.label.uk : selectedScenario.label.en) : (selectedMotion?.name ?? null);
 
   // Per-material texture resolution for multi-material actors (see the matching prop doc in
   // SkeletonAnimationViewer) — same library lookup the auto-match above uses. When the user
@@ -559,6 +676,27 @@ export default function Animations({ lang }: Props) {
             {!selectedActor ? (
               <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
                 {lang === "uk" ? "Оберіть персонажа зліва" : "Select a character on the left"}
+              </div>
+            ) : selectedScenario && scenarioError ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--red)" }}>{scenarioError}</div>
+            ) : selectedScenario && scenarioSteps ? (
+              <ScenarioPlayer
+                key={selectedScenario.id}
+                nodes={skeletonNodes}
+                steps={scenarioSteps}
+                playing={playing}
+                showSkeleton={showSkeleton}
+                mirrorSkeleton={mirrorSkeleton}
+                mirrorMesh={mirrorMesh}
+                skinnedMesh={skinnedMeshData}
+                objUrl={objUrl}
+                diffuseUrl={diffuseUrl}
+                normalUrl={normalUrl}
+                resolveTexture={resolveTexture}
+              />
+            ) : selectedScenario ? (
+              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-faint)" }}>
+                {lang === "uk" ? "Завантаження реальних кадрів сценарію…" : "Loading real scenario keyframes…"}
               </div>
             ) : textureSideBySide && enhancedRels.size > 0 && (motionTracksData ? true : !!objUrl) ? (
               <div style={{ height: "100%", display: "flex", gap: 2 }}>
@@ -1082,12 +1220,12 @@ export default function Animations({ lang }: Props) {
           </div>
           <div style={{ display: "flex", gap: 6, overflow: "auto", flex: 1 }}>
             <SearchableList
-              items={visibleMotions}
-              selectedName={selectedMotion?.name ?? null}
-              onSelect={setSelectedMotion}
+              items={motionListItems}
+              selectedName={selectedListName}
+              onSelect={handleSelectListItem}
               query={motionQuery}
               onQueryChange={setMotionQuery}
-              placeholder={lang === "uk" ? "Пошук анімації…" : "Search animations…"}
+              placeholder={lang === "uk" ? "Пошук анімації або сценарію…" : "Search animations or scenarios…"}
               limit={150}
             />
           </div>

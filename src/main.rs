@@ -155,7 +155,16 @@ enum Commands {
         secondary: f32,
         #[arg(default_value_t = 0.0)]
         sharpness: f32,
-        #[arg(default_value_t = false)]
+        // Plain `bool` positional fields default to a `SetTrue` flag under clap's derive
+        // inference, which conflicts with being positional (a flag takes no value; a positional
+        // arg must) — clap only now validates this combination (a `debug_assert`), so it slipped
+        // in unnoticed until something actually invoked this exact command with an explicit
+        // trailing value. `action = Set` overrides the inference: an ordinary "true"/"false"
+        // positional value, parsed via bool's own `FromStr`, matching how `vite-dev-api.ts`'s
+        // `runCli` already calls this (positional `doubleRate` string at the end of argv) — the
+        // Tauri command path (`motion_tracks` in app/src-tauri) never goes through clap at all,
+        // so this only ever broke dev-bridge/CLI usage, not the packaged app.
+        #[arg(default_value_t = false, action = clap::ArgAction::Set)]
         double_rate: bool,
     },
     /// Prints one actor's real skinned mesh (positions/normals/UVs/faces/per-vertex bone
