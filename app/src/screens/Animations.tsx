@@ -378,18 +378,15 @@ export default function Animations({ lang }: Props) {
     };
   }, [selectedScenario, skeletonNodes, motions]);
 
-  // Scenarios are picked from the SAME list as regular clips (owner request: switch between
-  // them like before) — pseudo-entries prepended, distinguished from a real `MotionEntry` by
-  // carrying a `scenario` field no real entry has.
-  const motionListItems = useMemo(
-    () => [...scenarios.map((s) => ({ name: s.label, scenario: s })), ...visibleMotions],
-    [visibleMotions, scenarios],
-  );
-  function handleSelectListItem(item: (typeof motionListItems)[number]) {
-    if ("scenario" in item) handleSelectScenario(item.scenario);
-    else handleSelectMotion(item);
-  }
-  const selectedListName = selectedScenario ? selectedScenario.label : (selectedMotion?.name ?? null);
+  // Owner request, 2026-07-21: "щоб не все було разом а поділено на анімації і сценарії" — the
+  // bottom list used to merge scenarios and regular clips into one array; now it's a tab
+  // selector between two separate lists, sharing the same search box.
+  const [listTab, setListTab] = useState<"motions" | "scenarios">("motions");
+  const scenarioListItems = useMemo(() => {
+    const items = scenarios.map((s) => ({ name: s.label, scenario: s }));
+    const q = motionQuery.trim().toLowerCase();
+    return q ? items.filter((i) => i.name.toLowerCase().includes(q)) : items;
+  }, [scenarios, motionQuery]);
 
   // Per-material texture resolution for multi-material actors (see the matching prop doc in
   // SkeletonAnimationViewer) — same library lookup the auto-match above uses. When the user
@@ -1151,41 +1148,74 @@ export default function Animations({ lang }: Props) {
 
         <div style={{ flexShrink: 0, height: 220, borderTop: "1px solid var(--border)", display: "flex", flexDirection: "column", padding: "10px 16px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-            <div style={{ font: "600 10px system-ui", letterSpacing: ".06em", textTransform: "uppercase", color: "var(--text-faint)" }}>
-              {lang === "uk"
-                ? `Анімації (${visibleMotions.length} з ${motions.length} реальних)`
-                : `Animations (${visibleMotions.length} of ${motions.length} real)`}
-            </div>
             <div style={{ display: "flex", gap: 4 }}>
-              {MOTION_CATEGORIES.map((c) => (
+              {(
+                [
+                  ["motions", lang === "uk" ? `Анімації (${visibleMotions.length})` : `Animations (${visibleMotions.length})`],
+                  ["scenarios", lang === "uk" ? `Сценарії (${scenarioListItems.length})` : `Scenarios (${scenarioListItems.length})`],
+                ] as [typeof listTab, string][]
+              ).map(([tab, text]) => (
                 <button
-                  key={c.id}
-                  onClick={() => setMotionCategoryFilter(c.id)}
+                  key={tab}
+                  onClick={() => setListTab(tab)}
                   style={{
-                    padding: "3px 9px",
+                    padding: "5px 12px",
                     borderRadius: 10,
-                    background: motionCategoryFilter === c.id ? "var(--accent)" : "var(--bg2)",
-                    border: `1px solid ${motionCategoryFilter === c.id ? "var(--accent)" : "var(--border)"}`,
-                    font: "600 10.5px system-ui",
-                    color: motionCategoryFilter === c.id ? "#fff" : "var(--text-dim)",
+                    background: listTab === tab ? "var(--accent)" : "var(--bg2)",
+                    border: `1px solid ${listTab === tab ? "var(--accent)" : "var(--border)"}`,
+                    font: "600 11px system-ui",
+                    color: listTab === tab ? "#fff" : "var(--text-dim)",
                     whiteSpace: "nowrap",
                   }}
                 >
-                  {lang === "uk" ? c.uk : c.en}
+                  {text}
                 </button>
               ))}
             </div>
+            {listTab === "motions" ? (
+              <div style={{ display: "flex", gap: 4 }}>
+                {MOTION_CATEGORIES.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => setMotionCategoryFilter(c.id)}
+                    style={{
+                      padding: "3px 9px",
+                      borderRadius: 10,
+                      background: motionCategoryFilter === c.id ? "var(--accent)" : "var(--bg2)",
+                      border: `1px solid ${motionCategoryFilter === c.id ? "var(--accent)" : "var(--border)"}`,
+                      font: "600 10.5px system-ui",
+                      color: motionCategoryFilter === c.id ? "#fff" : "var(--text-dim)",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {lang === "uk" ? c.uk : c.en}
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
           <div style={{ display: "flex", gap: 6, overflow: "auto", flex: 1 }}>
-            <SearchableList
-              items={motionListItems}
-              selectedName={selectedListName}
-              onSelect={handleSelectListItem}
-              query={motionQuery}
-              onQueryChange={setMotionQuery}
-              placeholder={lang === "uk" ? "Пошук анімації або сценарію…" : "Search animations or scenarios…"}
-              limit={150}
-            />
+            {listTab === "motions" ? (
+              <SearchableList
+                items={visibleMotions}
+                selectedName={selectedMotion?.name ?? null}
+                onSelect={handleSelectMotion}
+                query={motionQuery}
+                onQueryChange={setMotionQuery}
+                placeholder={lang === "uk" ? "Пошук анімації…" : "Search animations…"}
+                limit={150}
+              />
+            ) : (
+              <SearchableList
+                items={scenarioListItems}
+                selectedName={selectedScenario?.label ?? null}
+                onSelect={(item) => handleSelectScenario(item.scenario)}
+                query={motionQuery}
+                onQueryChange={setMotionQuery}
+                placeholder={lang === "uk" ? "Пошук сценарію…" : "Search scenarios…"}
+                limit={150}
+              />
+            )}
           </div>
         </div>
       </div>
